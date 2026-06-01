@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated documents
+/exports
+*.zip
+
+# PDF.js worker (copied from node_modules)
+/public/pdf.worker.mjs
+/public/pdf.worker.mjs.map
+
