@@ -17,7 +17,7 @@ export const generateFilename = (template: string, rowData: ExcelRow, fallback: 
   if (matches) {
     matches.forEach((match) => {
       const headerName = match.replace(/\{\{|\}\}/g, '').trim();
-      const value = rowData[headerName] || 'Unknown';
+      const value = rowData[headerName] ?? 'Unknown';
       filename = filename.replace(match, String(value));
     });
   }
@@ -78,7 +78,7 @@ export const exportBatch = async (
     textLayer.destroyChildren();
     
     canvasFields.forEach((field) => {
-      const value = rowData[field.headerName] || '';
+      const value = rowData[field.headerName] ?? '';
       const textAlign = field.align || 'center';
       
       // Create text node

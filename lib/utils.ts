@@ -86,7 +86,8 @@ export const validateTemplate = (template: string, headers: string[]): {
   missingHeaders: string[];
 } => {
   const placeholders = extractPlaceholders(template);
-  const missingHeaders = placeholders.filter(p => !headers.includes(p));
+  const normalizedHeaders = headers.map((header) => header.trim());
+  const missingHeaders = placeholders.filter(p => !normalizedHeaders.includes(p.trim()));
   
   return {
     valid: missingHeaders.length === 0,

@@ -2,15 +2,37 @@ import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { ExcelRow } from '@/types';
 
+const normalizeParsedRows = (rows: ExcelRow[]): { headers: string[]; data: ExcelRow[] } => {
+  const headerSet = new Set<string>();
+
+  const data = rows.map((row) => {
+    const normalizedRow: ExcelRow = {};
+
+    Object.entries(row).forEach(([key, value]) => {
+      const normalizedKey = key.trim();
+
+      if (normalizedKey) {
+        headerSet.add(normalizedKey);
+        normalizedRow[normalizedKey] = value;
+      }
+    });
+
+    return normalizedRow;
+  });
+
+  return {
+    headers: Array.from(headerSet),
+    data,
+  };
+};
+
 export const parseCSV = (file: File): Promise<{ headers: string[]; data: ExcelRow[] }> => {
   return new Promise((resolve, reject) => {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
-        const headers = results.meta.fields || [];
-        const data = results.data as ExcelRow[];
-        resolve({ headers, data });
+        resolve(normalizeParsedRows(results.data as ExcelRow[]));
       },
       error: (error) => {
         reject(error);
@@ -30,10 +52,8 @@ export const parseExcel = (file: File): Promise<{ headers: string[]; data: Excel
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet) as ExcelRow[];
-        
-        const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
-        
-        resolve({ headers, data: jsonData });
+
+        resolve(normalizeParsedRows(jsonData));
       } catch (error) {
         reject(error);
       }
