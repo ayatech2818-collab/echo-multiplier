@@ -65,7 +65,9 @@ export const exportBatch = async (
   excelData: ExcelRow[],
   filenameTemplate: string,
   format: OutputFormat,
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
+  startIndex: number = 0,
+  totalRecords: number = excelData.length
 ): Promise<Blob> => {
   const zip = new JSZip();
   
@@ -106,7 +108,8 @@ export const exportBatch = async (
     textLayer.batchDraw();
     
     // Generate filename
-    const filename = generateFilename(filenameTemplate, rowData, `document-${i + 1}`);
+    const recordNumber = startIndex + i + 1;
+    const filename = generateFilename(filenameTemplate, rowData, `document-${recordNumber}`);
     
     // Export document
     const { blob, filename: fullFilename } = await exportSingleDocument(
@@ -118,7 +121,7 @@ export const exportBatch = async (
     zip.file(fullFilename, blob);
     
     if (onProgress) {
-      onProgress(i + 1, excelData.length);
+      onProgress(recordNumber, totalRecords);
     }
   }
   

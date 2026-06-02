@@ -15,6 +15,7 @@ export interface ExcelRow {
 }
 
 export type OutputFormat = 'image' | 'pdf';
+export type ExportBatchSize = 50 | 100 | 250 | 500 | 'all';
 
 export interface AppState {
   templateImage: HTMLImageElement | null;
@@ -23,6 +24,7 @@ export interface AppState {
   canvasFields: CanvasField[];
   selectedFieldId: string | null;
   outputFormat: OutputFormat;
+  exportBatchSize: ExportBatchSize;
   filenameTemplate: string;
   previewMode: boolean;
 }

@@ -8,7 +8,7 @@ import HeaderChip from '@/components/HeaderChip';
 import CanvasWorkspace from '@/components/CanvasWorkspace';
 import ExportControls from '@/components/ExportControls';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
-import { CanvasField, ExcelRow, OutputFormat } from '@/types';
+import { CanvasField, ExcelRow, ExportBatchSize, OutputFormat } from '@/types';
 import { parseCSV, parseExcel, loadTemplate } from '@/lib/fileParser';
 import { exportBatch, downloadZip } from '@/lib/exportUtils';
 
@@ -19,6 +19,7 @@ export default function Home() {
   const [canvasFields, setCanvasFields] = useState<CanvasField[]>([]);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('image');
+  const [exportBatchSize, setExportBatchSize] = useState<ExportBatchSize>(100);
   const [filenameTemplate, setFilenameTemplate] = useState('');
   const [previewMode, setPreviewMode] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -83,19 +84,34 @@ export default function Home() {
     setExportProgress({ current: 0, total: excelData.length });
 
     try {
-      const zipBlob = await exportBatch(
-        stageRef.current,
-        textLayerRef.current,
-        canvasFields,
-        excelData,
-        filenameTemplate,
-        outputFormat,
-        (current, total) => {
-          setExportProgress({ current, total });
-        }
-      );
+      const batchSize = exportBatchSize === 'all' ? excelData.length : exportBatchSize;
+      const totalBatches = Math.ceil(excelData.length / batchSize);
 
-      downloadZip(zipBlob, 'echo-multiplier-documents.zip');
+      for (let startIndex = 0; startIndex < excelData.length; startIndex += batchSize) {
+        const batchNumber = Math.floor(startIndex / batchSize) + 1;
+        const batchData = excelData.slice(startIndex, startIndex + batchSize);
+        const endIndex = startIndex + batchData.length;
+        const zipBlob = await exportBatch(
+          stageRef.current,
+          textLayerRef.current,
+          canvasFields,
+          batchData,
+          filenameTemplate,
+          outputFormat,
+          (current, total) => {
+            setExportProgress({ current, total });
+          },
+          startIndex,
+          excelData.length
+        );
+
+        const paddedBatchNumber = String(batchNumber).padStart(2, '0');
+        const zipName = totalBatches === 1
+          ? 'echo-multiplier-documents.zip'
+          : `echo-multiplier-documents-batch-${paddedBatchNumber}-${startIndex + 1}-${endIndex}.zip`;
+
+        downloadZip(zipBlob, zipName);
+      }
     } catch (error) {
       console.error('Export failed:', error);
       alert('Export failed. Please try again.');
@@ -251,6 +267,8 @@ export default function Home() {
                 onFilenameTemplateChange={setFilenameTemplate}
                 outputFormat={outputFormat}
                 onOutputFormatChange={setOutputFormat}
+                exportBatchSize={exportBatchSize}
+                onExportBatchSizeChange={setExportBatchSize}
                 onExport={handleExport}
                 disabled={!canExport}
                 isExporting={isExporting}
@@ -276,6 +294,12 @@ export default function Home() {
                     <div className="flex justify-between">
                       <span className="text-[#86868b]">Output Format:</span>
                       <span className="font-medium uppercase">{outputFormat}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#86868b]">Records per ZIP:</span>
+                      <span className="font-medium">
+                        {exportBatchSize === 'all' ? 'All' : exportBatchSize}
+                      </span>
                     </div>
                   </div>
                 </div>

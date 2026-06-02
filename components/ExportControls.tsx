@@ -1,7 +1,7 @@
 'use client';
 
 import { Download, FileImage, FileText, AlertCircle, Plus } from 'lucide-react';
-import { OutputFormat } from '@/types';
+import { ExportBatchSize, OutputFormat } from '@/types';
 import { validateTemplate } from '@/lib/utils';
 import { useMemo, useState, useRef, useEffect } from 'react';
 
@@ -10,6 +10,8 @@ interface ExportControlsProps {
   onFilenameTemplateChange: (template: string) => void;
   outputFormat: OutputFormat;
   onOutputFormatChange: (format: OutputFormat) => void;
+  exportBatchSize: ExportBatchSize;
+  onExportBatchSizeChange: (size: ExportBatchSize) => void;
   onExport: () => void;
   disabled: boolean;
   isExporting: boolean;
@@ -22,6 +24,8 @@ export default function ExportControls({
   onFilenameTemplateChange,
   outputFormat,
   onOutputFormatChange,
+  exportBatchSize,
+  onExportBatchSizeChange,
   onExport,
   disabled,
   isExporting,
@@ -71,6 +75,10 @@ export default function ExportControls({
       input.setSelectionRange(newPosition, newPosition);
       input.focus();
     }, 0);
+  };
+
+  const handleBatchSizeChange = (value: string) => {
+    onExportBatchSizeChange(value === 'all' ? 'all' : Number(value) as ExportBatchSize);
   };
 
   return (
@@ -170,6 +178,26 @@ export default function ExportControls({
               <span className="text-[15px] font-medium">PDF</span>
             </button>
           </div>
+        </div>
+
+        <div>
+          <label className="block text-[15px] font-medium mb-2 text-[#1d1d1f]">
+            Records per ZIP
+          </label>
+          <select
+            value={exportBatchSize}
+            onChange={(e) => handleBatchSizeChange(e.target.value)}
+            className="w-full px-4 py-2 border border-[#e0e0e0] rounded-[12px] text-[15px] focus:outline-none focus:ring-2 focus:ring-[#0066cc] bg-white cursor-pointer"
+          >
+            <option value="50">50 records</option>
+            <option value="100">100 records</option>
+            <option value="250">250 records</option>
+            <option value="500">500 records</option>
+            <option value="all">All records in one ZIP</option>
+          </select>
+          <p className="mt-1 text-[13px] text-[#86868b]">
+            Smaller batches are safer for large files and easier to retry.
+          </p>
         </div>
 
         <button
