@@ -123,11 +123,12 @@ export const loadPDF = async (file: File): Promise<HTMLImageElement> => {
       canvas.height = viewport.height;
       
       // Render PDF page to canvas
-      const renderContext: any = {
+      const renderContext: Parameters<typeof page.render>[0] = {
+        canvas,
         canvasContext: context,
         viewport: viewport,
       };
-      
+
       await page.render(renderContext).promise;
       
       // Convert canvas to image

@@ -78,7 +78,7 @@ export const exportBatch = async (
     textLayer.destroyChildren();
     
     canvasFields.forEach((field) => {
-      const value = rowData[field.headerName] ?? '';
+      const value = field.isStatic ? field.headerName : rowData[field.headerName] ?? '';
       const textAlign = field.align || 'center';
       
       // Create text node

@@ -8,6 +8,9 @@ export interface CanvasField {
   fontStyle: 'normal' | 'bold' | 'italic' | 'bold italic';
   fontFamily?: string;
   align?: 'left' | 'center' | 'right';
+  // When true, this field renders its literal text (stored in headerName) instead of
+  // looking up a value from the dataset row. Used for custom words like "and", "or".
+  isStatic?: boolean;
 }
 
 export interface ExcelRow {

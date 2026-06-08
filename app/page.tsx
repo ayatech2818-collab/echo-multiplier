@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Eye, EyeOff, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Trash2, Plus, Layers, UploadCloud, Tags, Pencil, Lightbulb, LayoutTemplate } from 'lucide-react';
 import Konva from 'konva';
 import FileUpload from '@/components/FileUpload';
 import HeaderChip from '@/components/HeaderChip';
@@ -11,9 +11,37 @@ import KeyboardShortcuts from '@/components/KeyboardShortcuts';
 import { CanvasField, ExcelRow, ExportBatchSize, OutputFormat } from '@/types';
 import { parseCSV, parseExcel, loadTemplate } from '@/lib/fileParser';
 import { exportBatch, downloadZip } from '@/lib/exportUtils';
+import { generateId } from '@/lib/utils';
+
+function SectionHeader({
+  step,
+  title,
+  description,
+  icon: Icon,
+}: {
+  step: number;
+  title: string;
+  description: string;
+  icon: React.ElementType;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent">
+        <Icon size={20} strokeWidth={2} />
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs font-semibold uppercase tracking-wide text-accent">Step {step}</p>
+        <h2 className="text-lg font-semibold tracking-tight text-ink">{title}</h2>
+        <p className="text-sm text-muted">{description}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const [templateImage, setTemplateImage] = useState<HTMLImageElement | null>(null);
+  const [templateName, setTemplateName] = useState<string | null>(null);
+  const [datasetName, setDatasetName] = useState<string | null>(null);
   const [excelHeaders, setExcelHeaders] = useState<string[]>([]);
   const [excelData, setExcelData] = useState<ExcelRow[]>([]);
   const [canvasFields, setCanvasFields] = useState<CanvasField[]>([]);
@@ -24,6 +52,8 @@ export default function Home() {
   const [previewMode, setPreviewMode] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState({ current: 0, total: 0 });
+  const [customTexts, setCustomTexts] = useState<string[]>([]);
+  const [customTextInput, setCustomTextInput] = useState('');
 
   const stageRef = useRef<Konva.Stage | null>(null);
   const textLayerRef = useRef<Konva.Layer | null>(null);
@@ -32,10 +62,11 @@ export default function Home() {
     try {
       const img = await loadTemplate(file);
       setTemplateImage(img);
+      setTemplateName(file.name);
     } catch (error) {
       console.error('Failed to load template:', error);
       const errorMessage = (error as Error).message;
-      
+
       if (file.type === 'application/pdf') {
         alert(
           'Failed to load PDF template.\n\n' +
@@ -61,10 +92,51 @@ export default function Home() {
       const result = isCSV ? await parseCSV(file) : await parseExcel(file);
       setExcelHeaders(result.headers);
       setExcelData(result.data);
+      setDatasetName(file.name);
     } catch (error) {
       console.error('Failed to parse dataset:', error);
       alert('Failed to parse dataset. Please check the file format.');
     }
+  };
+
+  const handleAddCustomText = () => {
+    const text = customTextInput.trim();
+    if (!text || customTexts.includes(text)) {
+      setCustomTextInput('');
+      return;
+    }
+    setCustomTexts([...customTexts, text]);
+    setCustomTextInput('');
+  };
+
+  const handleRemoveCustomText = (text: string) => {
+    setCustomTexts(customTexts.filter((t) => t !== text));
+  };
+
+  // Tap/click path for placing a field (works on touch devices, unlike HTML5 drag-and-drop).
+  // Places the field near the template center with a small cascade so repeated taps don't overlap.
+  const handleAddField = (label: string, isStatic: boolean) => {
+    if (!templateImage) {
+      alert('Please upload a template first.');
+      return;
+    }
+
+    const cascade = (canvasFields.length % 8) * 24;
+    const newField: CanvasField = {
+      id: generateId(),
+      headerName: label,
+      x: templateImage.width / 2 + cascade,
+      y: templateImage.height / 2 + cascade,
+      fontSize: 24,
+      fill: '#1d1d1f',
+      fontStyle: 'normal',
+      fontFamily: 'Arial',
+      align: 'center',
+      isStatic,
+    };
+
+    setCanvasFields([...canvasFields, newField]);
+    setSelectedFieldId(newField.id);
   };
 
   const handleDeleteSelected = () => {
@@ -124,7 +196,7 @@ export default function Home() {
   const canExport = templateImage && excelData.length > 0 && canvasFields.length > 0;
 
   return (
-    <div className="min-h-screen bg-[#f5f5f7]">
+    <div className="min-h-screen bg-page">
       <KeyboardShortcuts
         onPreviewToggle={() => setPreviewMode(!previewMode)}
         onExport={handleExport}
@@ -134,99 +206,169 @@ export default function Home() {
       />
 
       {/* Top Navigation */}
-      <nav className="bg-[#000000] text-white px-6 py-4">
-        <div className="max-w-[1400px] mx-auto">
-          <h1 className="text-[21px] font-semibold tracking-[-0.02em]">
-            Echo-Multiplier
-          </h1>
+      <header className="sticky top-0 z-40 border-b border-line bg-surface/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[1400px] items-center gap-3 px-4 py-3 sm:px-6">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-white shadow-soft">
+            <Layers size={18} strokeWidth={2.25} />
+          </div>
+          <div className="min-w-0 leading-tight">
+            <h1 className="text-base font-semibold tracking-tight text-ink">Echo Multiplier</h1>
+            <p className="text-xs text-muted">Batch-generate documents from a template and your data</p>
+          </div>
         </div>
-      </nav>
+      </header>
 
       {/* Main Content */}
-      <main className="max-w-[1400px] mx-auto px-6 py-8">
+      <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 sm:py-8">
         {/* Upload Section */}
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-          <FileUpload
-            label="Upload Template (Image/PDF)"
-            accept="image/png,image/jpeg,image/jpg,application/pdf"
-            onFileSelect={handleTemplateUpload}
-          />
-          <FileUpload
-            label="Upload Dataset (Excel/CSV)"
-            accept=".xlsx,.xls,.csv"
-            onFileSelect={handleDatasetUpload}
-          />
+        <section className="mb-6 sm:mb-8">
+          <div className="mb-4">
+            <SectionHeader
+              step={1}
+              icon={UploadCloud}
+              title="Upload files"
+              description="Add a template image or PDF, plus your Excel or CSV dataset."
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 sm:gap-6">
+            <FileUpload
+              label="Template (Image / PDF)"
+              hint="PNG, JPG, or PDF — drag & drop or click"
+              accept="image/png,image/jpeg,image/jpg,application/pdf"
+              onFileSelect={handleTemplateUpload}
+              selectedFileName={templateName}
+            />
+            <FileUpload
+              label="Dataset (Excel / CSV)"
+              hint="XLSX, XLS, or CSV — drag & drop or click"
+              accept=".xlsx,.xls,.csv"
+              onFileSelect={handleDatasetUpload}
+              selectedFileName={datasetName}
+            />
+          </div>
         </section>
 
         {/* PDF Info */}
         {!templateImage && (
-          <div className="mb-8 p-4 bg-white border border-[#e0e0e0] rounded-[12px]">
-            <p className="text-[15px] text-[#86868b]">
-              <strong className="text-[#1d1d1f]">💡 Tip:</strong> You can upload PNG, JPG, or PDF files as templates. 
-              For PDFs, the first page will be used. If a PDF fails to load, try exporting it as a PNG/JPG image instead.
+          <div className="mb-6 flex items-start gap-3 rounded-xl border border-line bg-surface p-4 shadow-soft sm:mb-8">
+            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
+              <Lightbulb size={18} strokeWidth={2} />
+            </div>
+            <p className="text-sm text-muted">
+              <span className="font-medium text-ink">Tip:</span> You can upload PNG, JPG, or PDF files as templates.
+              For PDFs, the first page is used. If a PDF fails to load, try exporting it as a PNG/JPG image instead.
             </p>
           </div>
         )}
 
-        {/* Headers Section */}
-        {excelHeaders.length > 0 && (
-          <section className="mb-8 border border-[#e0e0e0] rounded-[18px] p-6 bg-white">
-            <h2 className="text-[19px] font-semibold mb-4 tracking-[-0.02em]">
-              Available Fields
-            </h2>
-            <p className="text-[15px] text-[#86868b] mb-4">
-              Drag and drop fields onto the template to position them
-            </p>
-            <div className="flex flex-wrap gap-3">
-              {excelHeaders.map((header) => (
-                <HeaderChip
-                  key={header}
-                  header={header}
-                  onDragStart={() => {}}
+        {/* Fields Section */}
+        {(excelHeaders.length > 0 || templateImage) && (
+          <section className="mb-6 rounded-2xl border border-line bg-surface p-4 shadow-soft sm:mb-8 sm:p-6">
+            <div className="mb-4">
+              <SectionHeader
+                step={2}
+                icon={Tags}
+                title="Place fields"
+                description="Tap to add to the template, or drag it onto the canvas, then drag to position."
+              />
+            </div>
+
+            {excelHeaders.length > 0 && (
+              <div className="flex flex-wrap gap-2.5">
+                {excelHeaders.map((header) => (
+                  <HeaderChip key={header} label={header} onAdd={handleAddField} />
+                ))}
+              </div>
+            )}
+
+            {/* Custom Text */}
+            <div className={excelHeaders.length > 0 ? 'mt-6 border-t border-line pt-6' : ''}>
+              <h3 className="mb-1 text-sm font-semibold text-ink">Custom text</h3>
+              <p className="mb-3 text-sm text-muted">
+                Add words that aren&apos;t in your dataset (e.g. &ldquo;and&rdquo;, &ldquo;or&rdquo;). They stay the same on every document.
+              </p>
+              <div className="mb-4 flex max-w-md flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="text"
+                  value={customTextInput}
+                  onChange={(e) => setCustomTextInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddCustomText();
+                    }
+                  }}
+                  placeholder="Type a word, e.g. and"
+                  className="h-11 flex-1 rounded-xl border border-line bg-surface px-3.5 text-sm text-ink transition-colors hover:border-line-strong"
                 />
-              ))}
+                <button
+                  type="button"
+                  onClick={handleAddCustomText}
+                  disabled={!customTextInput.trim()}
+                  className="flex h-11 items-center justify-center gap-1.5 rounded-full bg-success px-5 text-sm font-semibold text-white transition-all hover:bg-success-hover active:scale-95 disabled:cursor-not-allowed disabled:bg-faint"
+                >
+                  <Plus size={18} strokeWidth={2.25} />
+                  Add
+                </button>
+              </div>
+              {customTexts.length > 0 && (
+                <div className="flex flex-wrap gap-2.5">
+                  {customTexts.map((text) => (
+                    <HeaderChip
+                      key={text}
+                      label={text}
+                      isStatic
+                      onAdd={handleAddField}
+                      onRemove={() => handleRemoveCustomText(text)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         )}
 
         {/* Canvas and Controls */}
         {templateImage && (
-          <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6">
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_360px] sm:gap-6">
             {/* Canvas Workspace */}
-            <section className="flex flex-col min-w-0">
-              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                <h2 className="text-[19px] font-semibold tracking-[-0.02em]">
-                  Template Editor
-                </h2>
+            <section className="flex min-w-0 flex-col">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <SectionHeader
+                  step={3}
+                  icon={Pencil}
+                  title="Edit & export"
+                  description="Select a field to style it, fine-tune positions, then export."
+                />
                 <div className="flex items-center gap-2">
                   {selectedFieldId && (
                     <button
                       onClick={handleDeleteSelected}
-                      className="flex items-center gap-2 px-4 py-2 rounded-full font-medium text-[15px] bg-white text-red-600 border border-red-600 hover:bg-red-50 transition-colors"
+                      className="flex h-10 items-center gap-2 rounded-full border border-danger/30 bg-surface px-4 text-sm font-medium text-danger transition-colors hover:bg-danger-soft"
                       title="Delete selected field (Delete key)"
                     >
-                      <Trash2 size={18} strokeWidth={1.5} />
+                      <Trash2 size={18} strokeWidth={1.75} />
                       Delete
                     </button>
                   )}
                   <button
                     onClick={() => setPreviewMode(!previewMode)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium text-[15px] transition-all ${
+                    className={`flex h-10 items-center gap-2 rounded-full px-4 text-sm font-medium transition-all ${
                       previewMode
-                        ? 'bg-[#0066cc] text-white'
-                        : 'bg-white text-[#1d1d1f] border border-[#e0e0e0]'
-                    }`}
+                        ? 'bg-accent text-white shadow-soft'
+                        : 'border border-line bg-surface text-ink hover:border-accent'
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
                     disabled={excelData.length === 0}
                     title="Toggle preview (P key)"
                   >
                     {previewMode ? (
                       <>
-                        <Eye size={18} strokeWidth={1.5} />
+                        <Eye size={18} strokeWidth={1.75} />
                         Preview On
                       </>
                     ) : (
                       <>
-                        <EyeOff size={18} strokeWidth={1.5} />
+                        <EyeOff size={18} strokeWidth={1.75} />
                         Preview Off
                       </>
                     )}
@@ -234,7 +376,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="flex justify-center w-full overflow-x-auto">
+              <div className="flex w-full justify-center overflow-x-auto rounded-2xl bg-page/60 p-3 sm:p-4">
                 <CanvasWorkspace
                   templateImage={templateImage}
                   canvasFields={canvasFields}
@@ -249,19 +391,19 @@ export default function Home() {
               </div>
 
               {/* Keyboard Shortcuts Help */}
-              <div className="mt-4 p-4 bg-white border border-[#e0e0e0] rounded-[12px]">
-                <p className="text-[13px] text-[#86868b] font-medium mb-2">Keyboard Shortcuts:</p>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[13px] text-[#86868b]">
-                  <div><kbd className="px-2 py-1 bg-[#f5f5f7] rounded">P</kbd> Toggle Preview</div>
-                  <div><kbd className="px-2 py-1 bg-[#f5f5f7] rounded">⌘/Ctrl+E</kbd> Export</div>
-                  <div><kbd className="px-2 py-1 bg-[#f5f5f7] rounded">Delete</kbd> Remove Field</div>
-                  <div><kbd className="px-2 py-1 bg-[#f5f5f7] rounded">Esc</kbd> Deselect</div>
+              <div className="mt-4 hidden rounded-xl border border-line bg-surface p-4 shadow-soft sm:block">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Keyboard Shortcuts</p>
+                <div className="grid grid-cols-2 gap-2 text-sm text-muted md:grid-cols-4">
+                  <div><kbd className="rounded bg-page px-2 py-1 font-medium text-ink">P</kbd> Toggle Preview</div>
+                  <div><kbd className="rounded bg-page px-2 py-1 font-medium text-ink">⌘/Ctrl+E</kbd> Export</div>
+                  <div><kbd className="rounded bg-page px-2 py-1 font-medium text-ink">Delete</kbd> Remove Field</div>
+                  <div><kbd className="rounded bg-page px-2 py-1 font-medium text-ink">Esc</kbd> Deselect</div>
                 </div>
               </div>
             </section>
 
             {/* Export Controls */}
-            <aside className="xl:sticky xl:top-6 xl:self-start">
+            <aside className="xl:sticky xl:top-20 xl:self-start">
               <ExportControls
                 filenameTemplate={filenameTemplate}
                 onFilenameTemplateChange={setFilenameTemplate}
@@ -278,26 +420,24 @@ export default function Home() {
 
               {/* Stats */}
               {excelData.length > 0 && (
-                <div className="mt-6 border border-[#e0e0e0] rounded-[18px] p-6 bg-white">
-                  <h3 className="text-[17px] font-semibold mb-3 tracking-[-0.02em]">
-                    Statistics
-                  </h3>
-                  <div className="space-y-2 text-[15px]">
+                <div className="mt-5 rounded-2xl border border-line bg-surface p-4 shadow-soft sm:p-6">
+                  <h3 className="mb-3 text-base font-semibold tracking-tight text-ink">Statistics</h3>
+                  <div className="space-y-2.5 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-[#86868b]">Total Records:</span>
-                      <span className="font-medium">{excelData.length}</span>
+                      <span className="text-muted">Total Records</span>
+                      <span className="font-semibold tabular-nums text-ink">{excelData.length}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-[#86868b]">Fields Placed:</span>
-                      <span className="font-medium">{canvasFields.length}</span>
+                      <span className="text-muted">Fields Placed</span>
+                      <span className="font-semibold tabular-nums text-ink">{canvasFields.length}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-[#86868b]">Output Format:</span>
-                      <span className="font-medium uppercase">{outputFormat}</span>
+                      <span className="text-muted">Output Format</span>
+                      <span className="font-semibold uppercase text-ink">{outputFormat}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-[#86868b]">Records per ZIP:</span>
-                      <span className="font-medium">
+                      <span className="text-muted">Records per ZIP</span>
+                      <span className="font-semibold tabular-nums text-ink">
                         {exportBatchSize === 'all' ? 'All' : exportBatchSize}
                       </span>
                     </div>
@@ -310,9 +450,14 @@ export default function Home() {
 
         {/* Empty State */}
         {!templateImage && (
-          <div className="text-center py-20">
-            <p className="text-[19px] text-[#86868b]">
-              Upload a template image and dataset to get started
+          <div className="flex flex-col items-center py-16 text-center sm:py-24">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-accent-soft text-accent">
+              <LayoutTemplate size={30} strokeWidth={1.75} />
+            </div>
+            <h2 className="text-xl font-semibold tracking-tight text-ink">Start by uploading a template</h2>
+            <p className="mt-2 max-w-md text-sm text-muted">
+              Upload a template image (or PDF) and a dataset above. Then drop your data fields onto the
+              template and export a document for every row.
             </p>
           </div>
         )}

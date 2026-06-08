@@ -6,6 +6,7 @@ import Konva from 'konva';
 import { Maximize2, Minus, Plus } from 'lucide-react';
 import { CanvasField, ExcelRow } from '@/types';
 import StyleToolbar from './StyleToolbar';
+import { FIELD_DND_TYPE, FieldDragPayload } from './HeaderChip';
 
 interface CanvasWorkspaceProps {
   templateImage: HTMLImageElement | null;
@@ -36,7 +37,6 @@ export default function CanvasWorkspace({
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [scale, setScale] = useState(1);
   const [zoom, setZoom] = useState(1.25);
-  const [draggedHeader, setDraggedHeader] = useState<string | null>(null);
 
   // Calculate scale to fit canvas in viewport - use ideal screen size
   useEffect(() => {
@@ -106,8 +106,16 @@ export default function CanvasWorkspace({
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    
-    if (!draggedHeader) return;
+
+    const raw = e.dataTransfer.getData(FIELD_DND_TYPE);
+    if (!raw) return;
+
+    let payload: FieldDragPayload;
+    try {
+      payload = JSON.parse(raw) as FieldDragPayload;
+    } catch {
+      return;
+    }
 
     const stage = stageRef.current;
     if (!stage) return;
@@ -119,7 +127,7 @@ export default function CanvasWorkspace({
 
     const newField: CanvasField = {
       id: `field-${Date.now()}-${Math.random()}`,
-      headerName: draggedHeader,
+      headerName: payload.content,
       x,
       y,
       fontSize: 24,
@@ -127,10 +135,11 @@ export default function CanvasWorkspace({
       fontStyle: 'normal',
       fontFamily: 'Arial',
       align: 'center',
+      isStatic: payload.isStatic,
     };
 
     onFieldsUpdate([...canvasFields, newField]);
-    setDraggedHeader(null);
+    onFieldSelect(newField.id);
   };
 
   const handleFieldDragEnd = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
@@ -156,25 +165,18 @@ export default function CanvasWorkspace({
 
   const selectedField = canvasFields.find((f) => f.id === selectedFieldId);
 
-  // Listen for drag events from HeaderChip
-  useEffect(() => {
-    const handleDragStart = (e: DragEvent) => {
-      const header = (e.target as HTMLElement)?.textContent;
-      if (header) {
-        setDraggedHeader(header);
-      }
-    };
-
-    document.addEventListener('dragstart', handleDragStart as any);
-    return () => document.removeEventListener('dragstart', handleDragStart as any);
-  }, []);
-
   return (
     <div className="relative w-full" ref={containerRef}>
-      <div className="mb-3 flex items-center justify-center gap-2">
+      {selectedField && selectedFieldId && (
+        <StyleToolbar
+          field={selectedField}
+          onUpdate={(updates) => handleFieldUpdate(selectedFieldId, updates)}
+        />
+      )}
+      <div className="mb-3 flex items-center justify-center gap-1.5">
         <button
           onClick={zoomOut}
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-[#e0e0e0] bg-white text-[#1d1d1f] hover:border-[#0066cc] disabled:opacity-40"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink shadow-sm transition-colors hover:border-accent hover:text-accent disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink"
           disabled={zoom <= 0.5}
           title="Zoom out"
           type="button"
@@ -183,16 +185,16 @@ export default function CanvasWorkspace({
         </button>
         <button
           onClick={resetZoom}
-          className="flex h-9 min-w-20 items-center justify-center gap-2 rounded-full border border-[#e0e0e0] bg-white px-3 text-[13px] font-medium text-[#1d1d1f] hover:border-[#0066cc]"
+          className="flex h-9 min-w-[88px] items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3 text-xs font-semibold tabular-nums text-ink shadow-sm transition-colors hover:border-accent hover:text-accent"
           title="Fit to workspace"
           type="button"
         >
-          <Maximize2 size={15} strokeWidth={2} />
+          <Maximize2 size={14} strokeWidth={2} />
           {Math.round(zoom * 100)}%
         </button>
         <button
           onClick={zoomIn}
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-[#e0e0e0] bg-white text-[#1d1d1f] hover:border-[#0066cc] disabled:opacity-40"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink shadow-sm transition-colors hover:border-accent hover:text-accent disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink"
           disabled={zoom >= 3}
           title="Zoom in"
           type="button"
@@ -201,10 +203,7 @@ export default function CanvasWorkspace({
         </button>
       </div>
       <div
-        className="inline-block bg-white rounded-[18px] overflow-hidden mx-auto"
-        style={{
-          boxShadow: 'rgba(0, 0, 0, 0.22) 3px 5px 30px',
-        }}
+        className="mx-auto inline-block overflow-hidden rounded-2xl border border-line bg-surface shadow-soft"
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
@@ -231,7 +230,9 @@ export default function CanvasWorkspace({
           </Layer>
           <Layer ref={textLayerRef}>
             {canvasFields.map((field) => {
-              const displayText = previewMode && previewData
+              const displayText = field.isStatic
+                ? field.headerName
+                : previewMode && previewData
                 ? String(previewData[field.headerName] || field.headerName)
                 : field.headerName;
 
@@ -270,7 +271,7 @@ export default function CanvasWorkspace({
                   onDragEnd={(e) => handleFieldDragEnd(field.id, e)}
                   onClick={() => onFieldSelect(field.id)}
                   onTap={() => onFieldSelect(field.id)}
-                  stroke={selectedFieldId === field.id ? '#0066cc' : undefined}
+                  stroke={selectedFieldId === field.id ? '#2563eb' : undefined}
                   strokeWidth={selectedFieldId === field.id ? 2 : 0}
                   listening={true}
                 />
@@ -279,18 +280,6 @@ export default function CanvasWorkspace({
           </Layer>
         </Stage>
       </div>
-
-      {selectedField && selectedFieldId && (
-        <StyleToolbar
-          field={selectedField}
-          onUpdate={(updates) => handleFieldUpdate(selectedFieldId, updates)}
-          position={{
-            x: selectedField.x * scale,
-            y: selectedField.y * scale,
-          }}
-          scale={scale}
-        />
-      )}
     </div>
   );
 }

@@ -42,13 +42,13 @@ export const formatFileSize = (bytes: number): string => {
 /**
  * Debounce function for performance optimization
  */
-export const debounce = <T extends (...args: any[]) => any>(
-  func: T,
+export const debounce = <Args extends unknown[]>(
+  func: (...args: Args) => unknown,
   wait: number
-): ((...args: Parameters<T>) => void) => {
-  let timeout: NodeJS.Timeout | null = null;
-  
-  return (...args: Parameters<T>) => {
+): ((...args: Args) => void) => {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+
+  return (...args: Args) => {
     if (timeout) clearTimeout(timeout);
     timeout = setTimeout(() => func(...args), wait);
   };
