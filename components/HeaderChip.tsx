@@ -1,6 +1,7 @@
 'use client';
 
 import { Plus, X } from 'lucide-react';
+import { CombinedFieldDef } from '@/types';
 
 // MIME type used to pass the chip payload through native HTML5 drag-and-drop (desktop).
 export const FIELD_DND_TYPE = 'application/x-field';
@@ -8,23 +9,28 @@ export const FIELD_DND_TYPE = 'application/x-field';
 export interface FieldDragPayload {
   content: string;
   isStatic: boolean;
+  // When set, the chip places a combined ("sentence") field built from these segments + base style.
+  combined?: CombinedFieldDef;
 }
 
 interface HeaderChipProps {
   label: string;
   isStatic?: boolean;
-  onAdd: (label: string, isStatic: boolean) => void;
+  combined?: CombinedFieldDef;
+  onAdd: (label: string, isStatic: boolean, combined?: CombinedFieldDef) => void;
   onRemove?: () => void;
 }
 
-export default function HeaderChip({ label, isStatic = false, onAdd, onRemove }: HeaderChipProps) {
+export default function HeaderChip({ label, isStatic = false, combined, onAdd, onRemove }: HeaderChipProps) {
   const handleDragStart = (e: React.DragEvent) => {
-    const payload: FieldDragPayload = { content: label, isStatic };
+    const payload: FieldDragPayload = { content: label, isStatic, combined };
     e.dataTransfer.setData(FIELD_DND_TYPE, JSON.stringify(payload));
     e.dataTransfer.effectAllowed = 'copy';
   };
 
-  const tone = isStatic
+  const tone = combined
+    ? 'bg-violet-600 text-white hover:bg-violet-700'
+    : isStatic
     ? 'bg-success text-white hover:bg-success-hover'
     : 'bg-accent text-white hover:bg-accent-hover';
 
@@ -34,11 +40,11 @@ export default function HeaderChip({ label, isStatic = false, onAdd, onRemove }:
       role="button"
       tabIndex={0}
       onDragStart={handleDragStart}
-      onClick={() => onAdd(label, isStatic)}
+      onClick={() => onAdd(label, isStatic, combined)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onAdd(label, isStatic);
+          onAdd(label, isStatic, combined);
         }
       }}
       title="Tap to add, or drag onto the template"

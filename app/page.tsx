@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Eye, EyeOff, Trash2, Plus, Layers, UploadCloud, Tags, Pencil, Lightbulb, LayoutTemplate } from 'lucide-react';
+import { Eye, EyeOff, Trash2, Plus, Layers, UploadCloud, Tags, Pencil, Lightbulb, LayoutTemplate, Sparkles } from 'lucide-react';
 import Konva from 'konva';
 import FileUpload from '@/components/FileUpload';
 import HeaderChip from '@/components/HeaderChip';
 import CanvasWorkspace from '@/components/CanvasWorkspace';
+import CombinedFieldBuilder from '@/components/CombinedFieldBuilder';
 import ExportControls from '@/components/ExportControls';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
-import { CanvasField, ExcelRow, ExportBatchSize, OutputFormat } from '@/types';
+import { CanvasField, CombinedFieldDef, ExcelRow, ExportBatchSize, OutputFormat } from '@/types';
 import { parseCSV, parseExcel, loadTemplate } from '@/lib/fileParser';
 import { exportBatch, downloadZip } from '@/lib/exportUtils';
 import { generateId } from '@/lib/utils';
@@ -54,6 +55,8 @@ export default function Home() {
   const [exportProgress, setExportProgress] = useState({ current: 0, total: 0 });
   const [customTexts, setCustomTexts] = useState<string[]>([]);
   const [customTextInput, setCustomTextInput] = useState('');
+  const [combinedFields, setCombinedFields] = useState<CombinedFieldDef[]>([]);
+  const [activeFieldTab, setActiveFieldTab] = useState<'custom' | 'combined'>('custom');
 
   const stageRef = useRef<Konva.Stage | null>(null);
   const textLayerRef = useRef<Konva.Layer | null>(null);
@@ -113,27 +116,52 @@ export default function Home() {
     setCustomTexts(customTexts.filter((t) => t !== text));
   };
 
+  const handleAddCombinedField = (def: CombinedFieldDef) => {
+    setCombinedFields([...combinedFields, def]);
+  };
+
+  const handleRemoveCombinedField = (id: string) => {
+    setCombinedFields(combinedFields.filter((d) => d.id !== id));
+  };
+
   // Tap/click path for placing a field (works on touch devices, unlike HTML5 drag-and-drop).
   // Places the field near the template center with a small cascade so repeated taps don't overlap.
-  const handleAddField = (label: string, isStatic: boolean) => {
+  const handleAddField = (label: string, isStatic: boolean, combined?: CombinedFieldDef) => {
     if (!templateImage) {
       alert('Please upload a template first.');
       return;
     }
 
     const cascade = (canvasFields.length % 8) * 24;
-    const newField: CanvasField = {
+    const position = {
       id: generateId(),
-      headerName: label,
       x: templateImage.width / 2 + cascade,
       y: templateImage.height / 2 + cascade,
-      fontSize: 24,
-      fill: '#1d1d1f',
-      fontStyle: 'normal',
-      fontFamily: 'Arial',
-      align: 'center',
-      isStatic,
     };
+
+    const newField: CanvasField = combined
+      ? {
+          ...position,
+          headerName: combined.label,
+          fontSize: combined.fontSize,
+          fill: combined.fill,
+          fontStyle: combined.fontStyle,
+          fontFamily: combined.fontFamily,
+          align: combined.align,
+          isStatic: false,
+          segments: combined.segments.map((s) => ({ ...s, id: generateId() })),
+          width: combined.width,
+        }
+      : {
+          ...position,
+          headerName: label,
+          fontSize: 24,
+          fill: '#1d1d1f',
+          fontStyle: 'normal',
+          fontFamily: 'Arial',
+          align: 'center',
+          isStatic,
+        };
 
     setCanvasFields([...canvasFields, newField]);
     setSelectedFieldId(newField.id);
@@ -281,47 +309,99 @@ export default function Home() {
               </div>
             )}
 
-            {/* Custom Text */}
+            {/* Field-creation tools — tabbed so only one is visible at a time (keeps Step 2 compact) */}
             <div className={excelHeaders.length > 0 ? 'mt-6 border-t border-line pt-6' : ''}>
-              <h3 className="mb-1 text-sm font-semibold text-ink">Custom text</h3>
-              <p className="mb-3 text-sm text-muted">
-                Add words that aren&apos;t in your dataset (e.g. &ldquo;and&rdquo;, &ldquo;or&rdquo;). They stay the same on every document.
-              </p>
-              <div className="mb-4 flex max-w-md flex-col gap-2 sm:flex-row sm:items-center">
-                <input
-                  type="text"
-                  value={customTextInput}
-                  onChange={(e) => setCustomTextInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAddCustomText();
-                    }
-                  }}
-                  placeholder="Type a word, e.g. and"
-                  className="h-11 flex-1 rounded-xl border border-line bg-surface px-3.5 text-sm text-ink transition-colors hover:border-line-strong"
+              {excelHeaders.length > 0 && (
+                <div className="mb-4 flex gap-1 rounded-xl border border-line bg-page p-1 sm:max-w-md">
+                  <button
+                    type="button"
+                    onClick={() => setActiveFieldTab('custom')}
+                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                      activeFieldTab === 'custom'
+                        ? 'bg-surface text-accent shadow-sm'
+                        : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    Custom text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveFieldTab('combined')}
+                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                      activeFieldTab === 'combined'
+                        ? 'bg-surface text-accent shadow-sm'
+                        : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    <Sparkles size={15} strokeWidth={2} />
+                    Combined field
+                  </button>
+                </div>
+              )}
+
+              {/* Active tool panel (Combined field needs a dataset; otherwise show Custom text) */}
+              {excelHeaders.length > 0 && activeFieldTab === 'combined' ? (
+                <CombinedFieldBuilder
+                  headers={excelHeaders}
+                  sampleRow={excelData[0] || null}
+                  onAdd={handleAddCombinedField}
                 />
-                <button
-                  type="button"
-                  onClick={handleAddCustomText}
-                  disabled={!customTextInput.trim()}
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-full bg-success px-5 text-sm font-semibold text-white transition-all hover:bg-success-hover active:scale-95 disabled:cursor-not-allowed disabled:bg-faint"
-                >
-                  <Plus size={18} strokeWidth={2.25} />
-                  Add
-                </button>
-              </div>
-              {customTexts.length > 0 && (
-                <div className="flex flex-wrap gap-2.5">
-                  {customTexts.map((text) => (
-                    <HeaderChip
-                      key={text}
-                      label={text}
-                      isStatic
-                      onAdd={handleAddField}
-                      onRemove={() => handleRemoveCustomText(text)}
+              ) : (
+                <div>
+                  <p className="mb-3 text-sm text-muted">
+                    Add words that aren&apos;t in your dataset (e.g. &ldquo;and&rdquo;, &ldquo;or&rdquo;). They stay the same on every document.
+                  </p>
+                  <div className="flex max-w-md flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      type="text"
+                      value={customTextInput}
+                      onChange={(e) => setCustomTextInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddCustomText();
+                        }
+                      }}
+                      placeholder="Type a word, e.g. and"
+                      className="h-11 flex-1 rounded-xl border border-line bg-surface px-3.5 text-sm text-ink transition-colors hover:border-line-strong"
                     />
-                  ))}
+                    <button
+                      type="button"
+                      onClick={handleAddCustomText}
+                      disabled={!customTextInput.trim()}
+                      className="flex h-11 items-center justify-center gap-1.5 rounded-full bg-success px-5 text-sm font-semibold text-white transition-all hover:bg-success-hover active:scale-95 disabled:cursor-not-allowed disabled:bg-faint"
+                    >
+                      <Plus size={18} strokeWidth={2.25} />
+                      Add
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Shared: every created field, always visible no matter which tab is active */}
+              {(customTexts.length > 0 || combinedFields.length > 0) && (
+                <div className="mt-5 border-t border-line pt-4">
+                  <p className="mb-2 text-xs font-medium text-faint">Your added fields — tap to place</p>
+                  <div className="flex flex-wrap gap-2.5">
+                    {customTexts.map((text) => (
+                      <HeaderChip
+                        key={`custom-${text}`}
+                        label={text}
+                        isStatic
+                        onAdd={handleAddField}
+                        onRemove={() => handleRemoveCustomText(text)}
+                      />
+                    ))}
+                    {combinedFields.map((def) => (
+                      <HeaderChip
+                        key={def.id}
+                        label={def.label}
+                        combined={def}
+                        onAdd={handleAddField}
+                        onRemove={() => handleRemoveCombinedField(def.id)}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

@@ -2,7 +2,8 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import jsPDF from 'jspdf';
 import { ExcelRow, CanvasField, OutputFormat } from '@/types';
-import { sanitizeFilename } from './utils';
+import { sanitizeFilename, resolveFieldText } from './utils';
+import { layoutCombined } from './combinedLayout';
 import Konva from 'konva';
 
 export const generateFilename = (template: string, rowData: ExcelRow, fallback: string): string => {
@@ -78,20 +79,39 @@ export const exportBatch = async (
     textLayer.destroyChildren();
     
     canvasFields.forEach((field) => {
-      const value = field.isStatic ? field.headerName : rowData[field.headerName] ?? '';
+      // Combined field: render one text node per laid-out run (anchored at the field top-left).
+      if (field.segments) {
+        const { runs } = layoutCombined(field, rowData);
+        runs.forEach((run) => {
+          textLayer.add(
+            new Konva.Text({
+              x: field.x + run.x,
+              y: field.y + run.y,
+              text: run.text,
+              fontSize: run.fontSize,
+              fill: run.fill,
+              fontStyle: run.fontStyle,
+              fontFamily: run.fontFamily,
+            })
+          );
+        });
+        return;
+      }
+
+      // Single-column or static field: one text node, anchored by alignment.
+      const value = resolveFieldText(field, rowData);
       const textAlign = field.align || 'center';
-      
-      // Create text node
+
       const text = new Konva.Text({
         x: field.x,
         y: field.y,
-        text: String(value),
+        text: value,
         fontSize: field.fontSize,
         fill: field.fill,
         fontStyle: field.fontStyle,
         fontFamily: field.fontFamily || 'Arial',
       });
-      
+
       // Calculate offset based on alignment to center text at the given coordinates
       const textWidth = text.width();
       let offsetX = 0;
@@ -100,7 +120,7 @@ export const exportBatch = async (
       } else if (textAlign === 'right') {
         offsetX = textWidth;
       }
-      
+
       text.offsetX(offsetX);
       textLayer.add(text);
     });

@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Image as KonvaImage, Text } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Text, Group, Rect } from 'react-konva';
 import Konva from 'konva';
 import { Maximize2, Minus, Plus } from 'lucide-react';
 import { CanvasField, ExcelRow } from '@/types';
+import { layoutCombined } from '@/lib/combinedLayout';
+import { resolveFieldText, generateId } from '@/lib/utils';
 import StyleToolbar from './StyleToolbar';
 import { FIELD_DND_TYPE, FieldDragPayload } from './HeaderChip';
 
@@ -37,6 +39,8 @@ export default function CanvasWorkspace({
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [scale, setScale] = useState(1);
   const [zoom, setZoom] = useState(1.25);
+  // For combined fields: which segment the StyleToolbar targets (null = whole field / base style).
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
 
   // Calculate scale to fit canvas in viewport - use ideal screen size
   useEffect(() => {
@@ -125,18 +129,34 @@ export default function CanvasWorkspace({
     const x = (e.clientX - rect.left) / scale;
     const y = (e.clientY - rect.top) / scale;
 
-    const newField: CanvasField = {
-      id: `field-${Date.now()}-${Math.random()}`,
-      headerName: payload.content,
-      x,
-      y,
-      fontSize: 24,
-      fill: '#1d1d1f',
-      fontStyle: 'normal',
-      fontFamily: 'Arial',
-      align: 'center',
-      isStatic: payload.isStatic,
-    };
+    const combined = payload.combined;
+    const newField: CanvasField = combined
+      ? {
+          id: `field-${Date.now()}-${Math.random()}`,
+          headerName: combined.label,
+          x,
+          y,
+          fontSize: combined.fontSize,
+          fill: combined.fill,
+          fontStyle: combined.fontStyle,
+          fontFamily: combined.fontFamily,
+          align: combined.align,
+          isStatic: false,
+          segments: combined.segments.map((s) => ({ ...s, id: generateId() })),
+          width: combined.width,
+        }
+      : {
+          id: `field-${Date.now()}-${Math.random()}`,
+          headerName: payload.content,
+          x,
+          y,
+          fontSize: 24,
+          fill: '#1d1d1f',
+          fontStyle: 'normal',
+          fontFamily: 'Arial',
+          align: 'center',
+          isStatic: payload.isStatic,
+        };
 
     onFieldsUpdate([...canvasFields, newField]);
     onFieldSelect(newField.id);
@@ -164,6 +184,10 @@ export default function CanvasWorkspace({
   };
 
   const selectedField = canvasFields.find((f) => f.id === selectedFieldId);
+  // Only treat a segment as selected if it belongs to the currently selected field — this implicitly
+  // clears the selection when the user picks a different field (no reset effect needed).
+  const activeSegmentId =
+    selectedField?.segments?.some((s) => s.id === selectedSegmentId) ? selectedSegmentId : null;
 
   return (
     <div className="relative w-full" ref={containerRef}>
@@ -171,6 +195,8 @@ export default function CanvasWorkspace({
         <StyleToolbar
           field={selectedField}
           onUpdate={(updates) => handleFieldUpdate(selectedFieldId, updates)}
+          selectedSegmentId={activeSegmentId}
+          onSelectSegment={setSelectedSegmentId}
         />
       )}
       <div className="mb-3 flex items-center justify-center gap-1.5">
@@ -230,11 +256,58 @@ export default function CanvasWorkspace({
           </Layer>
           <Layer ref={textLayerRef}>
             {canvasFields.map((field) => {
-              const displayText = field.isStatic
-                ? field.headerName
-                : previewMode && previewData
-                ? String(previewData[field.headerName] || field.headerName)
-                : field.headerName;
+              // Combined ("sentence") field: a draggable group of per-segment styled runs,
+              // laid out by the shared engine so preview matches export exactly.
+              if (field.segments) {
+                const { runs, boxWidth, boxHeight } = layoutCombined(
+                  field,
+                  previewMode ? previewData : null
+                );
+                const isSelected = selectedFieldId === field.id;
+                return (
+                  <Group
+                    key={field.id}
+                    id={field.id}
+                    x={field.x}
+                    y={field.y}
+                    draggable
+                    onDragEnd={(e) => handleFieldDragEnd(field.id, e)}
+                    onClick={() => onFieldSelect(field.id)}
+                    onTap={() => onFieldSelect(field.id)}
+                  >
+                    {/* Invisible hit area so the whole box is draggable/clickable, not just glyphs */}
+                    <Rect x={0} y={0} width={Math.max(boxWidth, 8)} height={Math.max(boxHeight, 8)} fill="transparent" />
+                    {isSelected && (
+                      <Rect
+                        x={0}
+                        y={0}
+                        width={Math.max(boxWidth, 8)}
+                        height={Math.max(boxHeight, 8)}
+                        stroke="#2563eb"
+                        strokeWidth={1}
+                        dash={[6, 4]}
+                        listening={false}
+                      />
+                    )}
+                    {runs.map((run, idx) => (
+                      <Text
+                        key={idx}
+                        x={run.x}
+                        y={run.y}
+                        text={run.text}
+                        fontSize={run.fontSize}
+                        fill={run.fill}
+                        fontStyle={run.fontStyle}
+                        fontFamily={run.fontFamily}
+                        listening={false}
+                      />
+                    ))}
+                  </Group>
+                );
+              }
+
+              // Single-column or static field: one text node, anchored by alignment.
+              const displayText = resolveFieldText(field, previewMode ? previewData : null);
 
               const textAlign = field.align || 'center';
 

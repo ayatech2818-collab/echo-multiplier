@@ -2,6 +2,20 @@
  * Utility functions for the Document Batch Generator
  */
 
+import { CanvasField, ExcelRow } from '@/types';
+
+/**
+ * Resolves the display/export text for a single-column or static (custom word) field.
+ * `row === null` means the editor skeleton (no preview data) — show the header/literal as a placeholder.
+ * Combined fields are NOT handled here; they go through layoutCombined() in combinedLayout.ts.
+ */
+export const resolveFieldText = (field: CanvasField, row: ExcelRow | null): string => {
+  if (field.isStatic) return field.headerName;
+  if (!row) return field.headerName;
+  const value = row[field.headerName];
+  return value === undefined || value === null ? '' : String(value);
+};
+
 /**
  * Validates if a filename template is valid
  */
