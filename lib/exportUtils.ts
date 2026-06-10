@@ -3,8 +3,24 @@ import { saveAs } from 'file-saver';
 import jsPDF from 'jspdf';
 import { ExcelRow, CanvasField, OutputFormat } from '@/types';
 import { sanitizeFilename, resolveFieldText } from './utils';
-import { layoutCombined } from './combinedLayout';
+import { layoutCombined, resolveSegmentText } from './combinedLayout';
 import Konva from 'konva';
+
+/**
+ * When no filename template is given, name each file after a field the user placed on the template.
+ * Priority: the first single-column field, else the first column segment inside a combined field.
+ * Returns '' when no data-backed field is placed (caller falls back to a numbered name).
+ */
+const autoNameValue = (canvasFields: CanvasField[], rowData: ExcelRow): string => {
+  const columnField = canvasFields.find((f) => !f.isStatic && !f.segments);
+  if (columnField) return resolveFieldText(columnField, rowData);
+
+  for (const field of canvasFields) {
+    const columnSeg = field.segments?.find((s) => s.type === 'column');
+    if (columnSeg) return resolveSegmentText(columnSeg, rowData);
+  }
+  return '';
+};
 
 export const generateFilename = (template: string, rowData: ExcelRow, fallback: string): string => {
   let filename = template.trim();
@@ -71,7 +87,9 @@ export const exportBatch = async (
   totalRecords: number = excelData.length
 ): Promise<Blob> => {
   const zip = new JSZip();
-  
+  // Track names already used in this zip so repeated field values don't silently overwrite each other.
+  const usedNames = new Map<string, number>();
+
   for (let i = 0; i < excelData.length; i++) {
     const rowData = excelData[i];
     
@@ -81,11 +99,12 @@ export const exportBatch = async (
     canvasFields.forEach((field) => {
       // Combined field: render one text node per laid-out run (anchored at the field top-left).
       if (field.segments) {
-        const { runs } = layoutCombined(field, rowData);
+        // offsetX anchors the box by `align` around field.x (same as the preview Group's offsetX).
+        const { runs, offsetX } = layoutCombined(field, rowData);
         runs.forEach((run) => {
           textLayer.add(
             new Konva.Text({
-              x: field.x + run.x,
+              x: field.x + run.x - offsetX,
               y: field.y + run.y,
               text: run.text,
               fontSize: run.fontSize,
@@ -127,10 +146,17 @@ export const exportBatch = async (
     
     textLayer.batchDraw();
     
-    // Generate filename
+    // Generate filename. With no template, default to a placed field's value for this row.
     const recordNumber = startIndex + i + 1;
-    const filename = generateFilename(filenameTemplate, rowData, `document-${recordNumber}`);
-    
+    const auto = sanitizeFilename(autoNameValue(canvasFields, rowData));
+    const fallback = auto || `document-${recordNumber}`;
+    let filename = generateFilename(filenameTemplate, rowData, fallback);
+
+    // Ensure uniqueness within this zip (field values can repeat across rows).
+    const count = usedNames.get(filename) ?? 0;
+    usedNames.set(filename, count + 1);
+    if (count > 0) filename = `${filename} (${count + 1})`;
+
     // Export document
     const { blob, filename: fullFilename } = await exportSingleDocument(
       stage,

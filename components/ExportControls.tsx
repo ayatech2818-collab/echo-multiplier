@@ -141,7 +141,8 @@ export default function ExportControls({
           )}
 
           <p className="mt-1.5 text-xs text-muted">
-            Leave empty for automatic names, or click the + button to select fields.
+            Leave empty to name each file after a field you placed on the template (e.g. each row&apos;s
+            value), or click the + button to build a custom name.
           </p>
           {!templateValidation.valid && (
             <div className="mt-2 flex items-start gap-2 text-xs text-danger">

@@ -259,7 +259,7 @@ export default function CanvasWorkspace({
               // Combined ("sentence") field: a draggable group of per-segment styled runs,
               // laid out by the shared engine so preview matches export exactly.
               if (field.segments) {
-                const { runs, boxWidth, boxHeight } = layoutCombined(
+                const { runs, boxWidth, boxHeight, offsetX } = layoutCombined(
                   field,
                   previewMode ? previewData : null
                 );
@@ -270,6 +270,7 @@ export default function CanvasWorkspace({
                     id={field.id}
                     x={field.x}
                     y={field.y}
+                    offsetX={offsetX}
                     draggable
                     onDragEnd={(e) => handleFieldDragEnd(field.id, e)}
                     onClick={() => onFieldSelect(field.id)}

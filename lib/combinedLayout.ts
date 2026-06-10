@@ -32,6 +32,9 @@ export interface CombinedLayout {
   runs: CombinedRun[];
   boxWidth: number;
   boxHeight: number;
+  // Box-anchor offset so `align` pivots the whole box around the field anchor (field.x), exactly like
+  // a normal field pivots its text: left → 0, center → boxWidth/2, right → boxWidth.
+  offsetX: number;
 }
 
 const LINE_HEIGHT_FACTOR = 1.2;
@@ -142,6 +145,12 @@ export const layoutCombined = (field: CanvasField, row: ExcelRow | null): Combin
   const maxLineWidth = lines.reduce((max, line) => Math.max(max, line.width), 0);
   const boxWidth = wrapWidth ?? maxLineWidth;
 
+  // Box-anchor offset: pivots the whole box around the field anchor by `align` (like normal fields).
+  // The per-line `offset` below still justifies wrapped lines *within* the box; the two compose.
+  let offsetX = 0;
+  if (align === 'center') offsetX = boxWidth / 2;
+  else if (align === 'right') offsetX = boxWidth;
+
   const runs: CombinedRun[] = [];
   let y = 0;
   lines.forEach((line) => {
@@ -163,5 +172,5 @@ export const layoutCombined = (field: CanvasField, row: ExcelRow | null): Combin
     y += line.height * LINE_HEIGHT_FACTOR;
   });
 
-  return { runs, boxWidth, boxHeight: y };
+  return { runs, boxWidth, boxHeight: y, offsetX };
 };
