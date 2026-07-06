@@ -7,6 +7,18 @@ import { layoutCombined, resolveSegmentText } from './combinedLayout';
 import Konva from 'konva';
 
 /**
+ * Maximum in-memory size for a single ZIP archive before auto-splitting (150 MB).
+ * Based on the base64-decoded byte size of all blobs accumulated so far.
+ */
+const ZIP_SIZE_LIMIT_BYTES = 150 * 1024 * 1024;
+
+/**
+ * Maximum number of pages per single-PDF volume before auto-splitting.
+ * Keep this conservative to avoid "Invalid string length" crashes in jsPDF.
+ */
+const PDF_PAGE_LIMIT = 200;
+
+/**
  * When no filename template is given, name each file after a field the user placed on the template.
  * Priority: the first single-column field, else the first column segment inside a combined field.
  * Returns '' when no data-backed field is placed (caller falls back to a numbered name).
@@ -43,6 +55,59 @@ export const generateFilename = (template: string, rowData: ExcelRow, fallback: 
   return sanitizeFilename(filename) || fallback;
 };
 
+/** Render a row onto the text layer (shared helper). */
+const renderRowOnLayer = (
+  textLayer: Konva.Layer,
+  canvasFields: CanvasField[],
+  rowData: ExcelRow
+) => {
+  textLayer.destroyChildren();
+
+  canvasFields.forEach((field) => {
+    // Combined field: render one text node per laid-out run.
+    if (field.segments) {
+      const { runs, offsetX } = layoutCombined(field, rowData);
+      runs.forEach((run) => {
+        textLayer.add(
+          new Konva.Text({
+            x: field.x + run.x - offsetX,
+            y: field.y + run.y,
+            text: run.text,
+            fontSize: run.fontSize,
+            fill: run.fill,
+            fontStyle: run.fontStyle,
+            fontFamily: run.fontFamily,
+          })
+        );
+      });
+      return;
+    }
+
+    // Single-column or static field.
+    const value = resolveFieldText(field, rowData);
+    const textAlign = field.align || 'center';
+    const text = new Konva.Text({
+      x: field.x,
+      y: field.y,
+      text: value,
+      fontSize: field.fontSize,
+      fill: field.fill,
+      fontStyle: field.fontStyle,
+      fontFamily: field.fontFamily || 'Arial',
+    });
+
+    const textWidth = text.width();
+    let offsetX = 0;
+    if (textAlign === 'center') offsetX = textWidth / 2;
+    else if (textAlign === 'right') offsetX = textWidth;
+
+    text.offsetX(offsetX);
+    textLayer.add(text);
+  });
+
+  textLayer.batchDraw();
+};
+
 export const exportSingleDocument = async (
   stage: Konva.Stage,
   filename: string,
@@ -75,6 +140,14 @@ export const exportSingleDocument = async (
   }
 };
 
+/**
+ * Export a batch of rows to one or more ZIP archives.
+ * When the estimated in-memory size of the current ZIP exceeds ZIP_SIZE_LIMIT_BYTES
+ * the current archive is sealed and a new one is started automatically.
+ *
+ * Returns an array of { blob, startRecord, endRecord } objects – one entry per
+ * auto-split volume.  The caller is responsible for naming and downloading each.
+ */
 export const exportBatch = async (
   stage: Konva.Stage,
   textLayer: Konva.Layer,
@@ -85,148 +158,89 @@ export const exportBatch = async (
   onProgress?: (current: number, total: number) => void,
   startIndex: number = 0,
   totalRecords: number = excelData.length
-): Promise<Blob> => {
-  const zip = new JSZip();
-  // Track names already used in this zip so repeated field values don't silently overwrite each other.
-  const usedNames = new Map<string, number>();
+): Promise<{ blob: Blob; startRecord: number; endRecord: number }[]> => {
+  const volumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
+
+  let zip = new JSZip();
+  let usedNames = new Map<string, number>();
+  /** Rough byte estimate of blobs added to the current zip (uncompressed). */
+  let currentZipBytes = 0;
+  /** Global record index of the first row in the current zip volume. */
+  let volumeStart = startIndex + 1;
 
   for (let i = 0; i < excelData.length; i++) {
     const rowData = excelData[i];
-    
-    // Update text fields with current row data
-    textLayer.destroyChildren();
-    
-    canvasFields.forEach((field) => {
-      // Combined field: render one text node per laid-out run (anchored at the field top-left).
-      if (field.segments) {
-        // offsetX anchors the box by `align` around field.x (same as the preview Group's offsetX).
-        const { runs, offsetX } = layoutCombined(field, rowData);
-        runs.forEach((run) => {
-          textLayer.add(
-            new Konva.Text({
-              x: field.x + run.x - offsetX,
-              y: field.y + run.y,
-              text: run.text,
-              fontSize: run.fontSize,
-              fill: run.fill,
-              fontStyle: run.fontStyle,
-              fontFamily: run.fontFamily,
-            })
-          );
-        });
-        return;
-      }
-
-      // Single-column or static field: one text node, anchored by alignment.
-      const value = resolveFieldText(field, rowData);
-      const textAlign = field.align || 'center';
-
-      const text = new Konva.Text({
-        x: field.x,
-        y: field.y,
-        text: value,
-        fontSize: field.fontSize,
-        fill: field.fill,
-        fontStyle: field.fontStyle,
-        fontFamily: field.fontFamily || 'Arial',
-      });
-
-      // Calculate offset based on alignment to center text at the given coordinates
-      const textWidth = text.width();
-      let offsetX = 0;
-      if (textAlign === 'center') {
-        offsetX = textWidth / 2;
-      } else if (textAlign === 'right') {
-        offsetX = textWidth;
-      }
-
-      text.offsetX(offsetX);
-      textLayer.add(text);
-    });
-    
-    textLayer.batchDraw();
-    
-    // Generate filename. With no template, default to a placed field's value for this row.
     const recordNumber = startIndex + i + 1;
+
+    renderRowOnLayer(textLayer, canvasFields, rowData);
+
+    // Generate filename
     const auto = sanitizeFilename(autoNameValue(canvasFields, rowData));
     const fallback = auto || `document-${recordNumber}`;
     let filename = generateFilename(filenameTemplate, rowData, fallback);
 
-    // Ensure uniqueness within this zip (field values can repeat across rows).
+    // Ensure uniqueness within this zip volume
     const count = usedNames.get(filename) ?? 0;
     usedNames.set(filename, count + 1);
     if (count > 0) filename = `${filename} (${count + 1})`;
 
     // Export document
-    const { blob, filename: fullFilename } = await exportSingleDocument(
-      stage,
-      filename,
-      format
-    );
-    
+    const { blob, filename: fullFilename } = await exportSingleDocument(stage, filename, format);
+    const blobSize = blob.size;
+
+    // Check if adding this file would bust the size limit AND we have at least one file already.
+    if (currentZipBytes > 0 && currentZipBytes + blobSize > ZIP_SIZE_LIMIT_BYTES) {
+      // Seal the current zip and start a new volume.
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      volumes.push({ blob: zipBlob, startRecord: volumeStart, endRecord: recordNumber - 1 });
+
+      zip = new JSZip();
+      usedNames = new Map<string, number>();
+      currentZipBytes = 0;
+      volumeStart = recordNumber;
+    }
+
     zip.file(fullFilename, blob);
-    
+    currentZipBytes += blobSize;
+
     if (onProgress) {
       onProgress(recordNumber, totalRecords);
     }
   }
-  
-  return await zip.generateAsync({ type: 'blob' });
+
+  // Seal the final (or only) volume.
+  if (currentZipBytes > 0) {
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    volumes.push({
+      blob: zipBlob,
+      startRecord: volumeStart,
+      endRecord: startIndex + excelData.length,
+    });
+  }
+
+  return volumes;
 };
 
+/**
+ * Export all rows as one or more PDFs.
+ * When the page count hits PDF_PAGE_LIMIT the current PDF is sealed and a
+ * new volume started, preventing "Invalid string length" crashes.
+ *
+ * Returns an array of { blob, startRecord, endRecord } objects.
+ */
 export const exportSinglePDF = async (
   stage: Konva.Stage,
   textLayer: Konva.Layer,
   canvasFields: CanvasField[],
   excelData: ExcelRow[],
   onProgress?: (current: number, total: number) => void,
-): Promise<Blob> => {
+): Promise<{ blob: Blob; startRecord: number; endRecord: number }[]> => {
   if (excelData.length === 0) throw new Error('No data to export');
 
-  // Render the first row so we can determine page dimensions
-  const renderRow = (rowData: ExcelRow) => {
-    textLayer.destroyChildren();
-    canvasFields.forEach((field) => {
-      if (field.segments) {
-        const { runs, offsetX } = layoutCombined(field, rowData);
-        runs.forEach((run) => {
-          textLayer.add(
-            new Konva.Text({
-              x: field.x + run.x - offsetX,
-              y: field.y + run.y,
-              text: run.text,
-              fontSize: run.fontSize,
-              fill: run.fill,
-              fontStyle: run.fontStyle,
-              fontFamily: run.fontFamily,
-            })
-          );
-        });
-        return;
-      }
-      const value = resolveFieldText(field, rowData);
-      const textAlign = field.align || 'center';
-      const text = new Konva.Text({
-        x: field.x,
-        y: field.y,
-        text: value,
-        fontSize: field.fontSize,
-        fill: field.fill,
-        fontStyle: field.fontStyle,
-        fontFamily: field.fontFamily || 'Arial',
-      });
-      const textWidth = text.width();
-      let offsetX = 0;
-      if (textAlign === 'center') offsetX = textWidth / 2;
-      else if (textAlign === 'right') offsetX = textWidth;
-      text.offsetX(offsetX);
-      textLayer.add(text);
-    });
-    textLayer.batchDraw();
-  };
+  const volumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
 
   // Render first row to get page dimensions
-  renderRow(excelData[0]);
+  renderRowOnLayer(textLayer, canvasFields, excelData[0]);
   const firstDataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
 
   const img = new Image();
@@ -238,7 +252,7 @@ export const exportSinglePDF = async (
   const pageW = img.width;
   const pageH = img.height;
 
-  const pdf = new jsPDF({
+  let pdf = new jsPDF({
     orientation: pageW > pageH ? 'landscape' : 'portrait',
     unit: 'px',
     format: [pageW, pageH],
@@ -247,15 +261,40 @@ export const exportSinglePDF = async (
   pdf.addImage(firstDataURL, 'JPEG', 0, 0, pageW, pageH);
   if (onProgress) onProgress(1, excelData.length);
 
+  let pagesInCurrentVolume = 1;
+  let volumeStart = 1;
+
   for (let i = 1; i < excelData.length; i++) {
-    renderRow(excelData[i]);
+    const recordNumber = i + 1;
+
+    // Seal and start new volume if we hit the page cap
+    if (pagesInCurrentVolume >= PDF_PAGE_LIMIT) {
+      volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: i });
+      pdf = new jsPDF({
+        orientation: pageW > pageH ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [pageW, pageH],
+      });
+      pagesInCurrentVolume = 0;
+      volumeStart = recordNumber;
+    }
+
+    renderRowOnLayer(textLayer, canvasFields, excelData[i]);
     const dataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
-    pdf.addPage([pageW, pageH]);
+
+    if (pagesInCurrentVolume > 0) {
+      pdf.addPage([pageW, pageH]);
+    }
     pdf.addImage(dataURL, 'JPEG', 0, 0, pageW, pageH);
-    if (onProgress) onProgress(i + 1, excelData.length);
+    pagesInCurrentVolume++;
+
+    if (onProgress) onProgress(recordNumber, excelData.length);
   }
 
-  return pdf.output('blob');
+  // Seal final volume
+  volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: excelData.length });
+
+  return volumes;
 };
 
 export const downloadZip = (blob: Blob, filename: string = 'documents.zip') => {

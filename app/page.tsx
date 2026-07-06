@@ -169,7 +169,8 @@ export default function Home() {
 
     try {
       if (outputFormat === 'single-pdf') {
-        const pdfBlob = await exportSinglePDF(
+        // exportSinglePDF now returns an array of volumes (auto-split by page limit)
+        const volumes = await exportSinglePDF(
           stageRef.current,
           textLayerRef.current,
           canvasFields,
@@ -179,20 +180,28 @@ export default function Home() {
           }
         );
 
-        const pdfName = filenameTemplate.trim()
-          ? `${sanitizeFilename(filenameTemplate) || 'documents'}.pdf`
-          : 'echo-multiplier-documents.pdf';
+        const baseName = filenameTemplate.trim()
+          ? sanitizeFilename(filenameTemplate) || 'documents'
+          : 'echo-multiplier-documents';
 
-        saveAs(pdfBlob, pdfName);
+        volumes.forEach(({ blob, startRecord, endRecord }, idx) => {
+          const pdfName =
+            volumes.length === 1
+              ? `${baseName}.pdf`
+              : `${baseName}-part-${String(idx + 1).padStart(2, '0')}-records-${startRecord}-${endRecord}.pdf`;
+          saveAs(blob, pdfName);
+        });
       } else {
         const batchSize = exportBatchSize === 'all' ? excelData.length : exportBatchSize;
-        const totalBatches = Math.ceil(excelData.length / batchSize);
+
+        // exportBatch returns volumes per manual batch; within each manual batch
+        // it auto-splits further if the ZIP exceeds the size limit.
+        let totalVolumes: number | null = null; // unknown until all batches complete
+        const allVolumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
 
         for (let startIndex = 0; startIndex < excelData.length; startIndex += batchSize) {
-          const batchNumber = Math.floor(startIndex / batchSize) + 1;
           const batchData = excelData.slice(startIndex, startIndex + batchSize);
-          const endIndex = startIndex + batchData.length;
-          const zipBlob = await exportBatch(
+          const volumes = await exportBatch(
             stageRef.current,
             textLayerRef.current,
             canvasFields,
@@ -205,14 +214,18 @@ export default function Home() {
             startIndex,
             excelData.length
           );
-
-          const paddedBatchNumber = String(batchNumber).padStart(2, '0');
-          const zipName = totalBatches === 1
-            ? 'echo-multiplier-documents.zip'
-            : `echo-multiplier-documents-batch-${paddedBatchNumber}-${startIndex + 1}-${endIndex}.zip`;
-
-          downloadZip(zipBlob, zipName);
+          allVolumes.push(...volumes);
         }
+
+        totalVolumes = allVolumes.length;
+
+        allVolumes.forEach(({ blob, startRecord, endRecord }, idx) => {
+          const zipName =
+            totalVolumes === 1
+              ? 'echo-multiplier-documents.zip'
+              : `echo-multiplier-documents-part-${String(idx + 1).padStart(2, '0')}-records-${startRecord}-${endRecord}.zip`;
+          downloadZip(blob, zipName);
+        });
       }
     } catch (error) {
       console.error('Export failed:', error);
