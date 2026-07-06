@@ -55,7 +55,7 @@ export interface ExcelRow {
   [key: string]: string | number;
 }
 
-export type OutputFormat = 'image' | 'pdf';
+export type OutputFormat = 'image' | 'pdf' | 'single-pdf';
 export type ExportBatchSize = 50 | 100 | 250 | 500 | 'all';
 
 export interface AppState {

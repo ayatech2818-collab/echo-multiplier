@@ -1,6 +1,6 @@
 'use client';
 
-import { Download, FileImage, FileText, AlertCircle, Plus } from 'lucide-react';
+import { Download, FileImage, FileText, FileStack, AlertCircle, Plus } from 'lucide-react';
 import { ExportBatchSize, OutputFormat } from '@/types';
 import { validateTemplate } from '@/lib/utils';
 import { useMemo, useState, useRef, useEffect } from 'react';
@@ -141,8 +141,9 @@ export default function ExportControls({
           )}
 
           <p className="mt-1.5 text-xs text-muted">
-            Leave empty to name each file after a field you placed on the template (e.g. each row&apos;s
-            value), or click the + button to build a custom name.
+            {outputFormat === 'single-pdf'
+              ? 'Used as the output PDF filename. Leave empty for a default name.'
+              : 'Leave empty to name each file after a field you placed on the template (e.g. each row&apos;s value), or click the + button to build a custom name.'}
           </p>
           {!templateValidation.valid && (
             <div className="mt-2 flex items-start gap-2 text-xs text-danger">
@@ -183,9 +184,22 @@ export default function ExportControls({
               <FileText size={18} strokeWidth={1.75} />
               PDF
             </button>
+            <button
+              onClick={() => onOutputFormatChange('single-pdf')}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all ${
+                outputFormat === 'single-pdf'
+                  ? 'bg-surface text-accent shadow-sm'
+                  : 'text-muted hover:text-ink'
+              }`}
+              type="button"
+            >
+              <FileStack size={18} strokeWidth={1.75} />
+              PDF All
+            </button>
           </div>
         </div>
 
+        {outputFormat !== 'single-pdf' && (
         <div>
           <label className="mb-1.5 block text-sm font-medium text-ink">
             Records per ZIP
@@ -205,6 +219,7 @@ export default function ExportControls({
             Smaller batches are safer for large files and easier to retry.
           </p>
         </div>
+        )}
 
         {isExporting && (
           <div aria-live="polite">

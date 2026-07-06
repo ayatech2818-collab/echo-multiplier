@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import { Eye, EyeOff, Trash2, Layers, UploadCloud, Tags, Pencil, Lightbulb, LayoutTemplate } from 'lucide-react';
 import Konva from 'konva';
+import { saveAs } from 'file-saver';
 import FileUpload from '@/components/FileUpload';
 import HeaderChip from '@/components/HeaderChip';
 import CanvasWorkspace from '@/components/CanvasWorkspace';
@@ -11,8 +12,8 @@ import ExportControls from '@/components/ExportControls';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
 import { CanvasField, CombinedFieldDef, ExcelRow, ExportBatchSize, OutputFormat } from '@/types';
 import { parseCSV, parseExcel, loadTemplate } from '@/lib/fileParser';
-import { exportBatch, downloadZip } from '@/lib/exportUtils';
-import { generateId } from '@/lib/utils';
+import { exportBatch, downloadZip, exportSinglePDF } from '@/lib/exportUtils';
+import { generateId, sanitizeFilename } from '@/lib/utils';
 
 function SectionHeader({
   step,
@@ -167,33 +168,51 @@ export default function Home() {
     setExportProgress({ current: 0, total: excelData.length });
 
     try {
-      const batchSize = exportBatchSize === 'all' ? excelData.length : exportBatchSize;
-      const totalBatches = Math.ceil(excelData.length / batchSize);
-
-      for (let startIndex = 0; startIndex < excelData.length; startIndex += batchSize) {
-        const batchNumber = Math.floor(startIndex / batchSize) + 1;
-        const batchData = excelData.slice(startIndex, startIndex + batchSize);
-        const endIndex = startIndex + batchData.length;
-        const zipBlob = await exportBatch(
+      if (outputFormat === 'single-pdf') {
+        const pdfBlob = await exportSinglePDF(
           stageRef.current,
           textLayerRef.current,
           canvasFields,
-          batchData,
-          filenameTemplate,
-          outputFormat,
+          excelData,
           (current, total) => {
             setExportProgress({ current, total });
-          },
-          startIndex,
-          excelData.length
+          }
         );
 
-        const paddedBatchNumber = String(batchNumber).padStart(2, '0');
-        const zipName = totalBatches === 1
-          ? 'echo-multiplier-documents.zip'
-          : `echo-multiplier-documents-batch-${paddedBatchNumber}-${startIndex + 1}-${endIndex}.zip`;
+        const pdfName = filenameTemplate.trim()
+          ? `${sanitizeFilename(filenameTemplate) || 'documents'}.pdf`
+          : 'echo-multiplier-documents.pdf';
 
-        downloadZip(zipBlob, zipName);
+        saveAs(pdfBlob, pdfName);
+      } else {
+        const batchSize = exportBatchSize === 'all' ? excelData.length : exportBatchSize;
+        const totalBatches = Math.ceil(excelData.length / batchSize);
+
+        for (let startIndex = 0; startIndex < excelData.length; startIndex += batchSize) {
+          const batchNumber = Math.floor(startIndex / batchSize) + 1;
+          const batchData = excelData.slice(startIndex, startIndex + batchSize);
+          const endIndex = startIndex + batchData.length;
+          const zipBlob = await exportBatch(
+            stageRef.current,
+            textLayerRef.current,
+            canvasFields,
+            batchData,
+            filenameTemplate,
+            outputFormat,
+            (current, total) => {
+              setExportProgress({ current, total });
+            },
+            startIndex,
+            excelData.length
+          );
+
+          const paddedBatchNumber = String(batchNumber).padStart(2, '0');
+          const zipName = totalBatches === 1
+            ? 'echo-multiplier-documents.zip'
+            : `echo-multiplier-documents-batch-${paddedBatchNumber}-${startIndex + 1}-${endIndex}.zip`;
+
+          downloadZip(zipBlob, zipName);
+        }
       }
     } catch (error) {
       console.error('Export failed:', error);
@@ -426,12 +445,14 @@ export default function Home() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted">Output Format</span>
-                      <span className="font-semibold uppercase text-ink">{outputFormat}</span>
+                      <span className="font-semibold uppercase text-ink">
+                        {outputFormat === 'single-pdf' ? 'Single PDF' : outputFormat}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted">Records per ZIP</span>
                       <span className="font-semibold tabular-nums text-ink">
-                        {exportBatchSize === 'all' ? 'All' : exportBatchSize}
+                        {outputFormat === 'single-pdf' ? 'N/A' : exportBatchSize === 'all' ? 'All' : exportBatchSize}
                       </span>
                     </div>
                   </div>

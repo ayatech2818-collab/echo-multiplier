@@ -174,6 +174,90 @@ export const exportBatch = async (
   return await zip.generateAsync({ type: 'blob' });
 };
 
+export const exportSinglePDF = async (
+  stage: Konva.Stage,
+  textLayer: Konva.Layer,
+  canvasFields: CanvasField[],
+  excelData: ExcelRow[],
+  onProgress?: (current: number, total: number) => void,
+): Promise<Blob> => {
+  if (excelData.length === 0) throw new Error('No data to export');
+
+  // Render the first row so we can determine page dimensions
+  const renderRow = (rowData: ExcelRow) => {
+    textLayer.destroyChildren();
+    canvasFields.forEach((field) => {
+      if (field.segments) {
+        const { runs, offsetX } = layoutCombined(field, rowData);
+        runs.forEach((run) => {
+          textLayer.add(
+            new Konva.Text({
+              x: field.x + run.x - offsetX,
+              y: field.y + run.y,
+              text: run.text,
+              fontSize: run.fontSize,
+              fill: run.fill,
+              fontStyle: run.fontStyle,
+              fontFamily: run.fontFamily,
+            })
+          );
+        });
+        return;
+      }
+      const value = resolveFieldText(field, rowData);
+      const textAlign = field.align || 'center';
+      const text = new Konva.Text({
+        x: field.x,
+        y: field.y,
+        text: value,
+        fontSize: field.fontSize,
+        fill: field.fill,
+        fontStyle: field.fontStyle,
+        fontFamily: field.fontFamily || 'Arial',
+      });
+      const textWidth = text.width();
+      let offsetX = 0;
+      if (textAlign === 'center') offsetX = textWidth / 2;
+      else if (textAlign === 'right') offsetX = textWidth;
+      text.offsetX(offsetX);
+      textLayer.add(text);
+    });
+    textLayer.batchDraw();
+  };
+
+  // Render first row to get page dimensions
+  renderRow(excelData[0]);
+  const firstDataURL = stage.toDataURL({ pixelRatio: 2 });
+
+  const img = new Image();
+  await new Promise<void>((resolve) => {
+    img.onload = () => resolve();
+    img.src = firstDataURL;
+  });
+
+  const pageW = img.width;
+  const pageH = img.height;
+
+  const pdf = new jsPDF({
+    orientation: pageW > pageH ? 'landscape' : 'portrait',
+    unit: 'px',
+    format: [pageW, pageH],
+  });
+
+  pdf.addImage(firstDataURL, 'PNG', 0, 0, pageW, pageH);
+  if (onProgress) onProgress(1, excelData.length);
+
+  for (let i = 1; i < excelData.length; i++) {
+    renderRow(excelData[i]);
+    const dataURL = stage.toDataURL({ pixelRatio: 2 });
+    pdf.addPage([pageW, pageH]);
+    pdf.addImage(dataURL, 'PNG', 0, 0, pageW, pageH);
+    if (onProgress) onProgress(i + 1, excelData.length);
+  }
+
+  return pdf.output('blob');
+};
+
 export const downloadZip = (blob: Blob, filename: string = 'documents.zip') => {
   saveAs(blob, filename);
 };
