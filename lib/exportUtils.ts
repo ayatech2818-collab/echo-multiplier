@@ -48,12 +48,12 @@ export const exportSingleDocument = async (
   filename: string,
   format: OutputFormat
 ): Promise<{ blob: Blob; filename: string }> => {
-  const dataURL = stage.toDataURL({ pixelRatio: 2 });
+  const dataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
   
   if (format === 'image') {
     const response = await fetch(dataURL);
     const blob = await response.blob();
-    return { blob, filename: `${filename}.png` };
+    return { blob, filename: `${filename}.jpg` };
   } else {
     // PDF export
     const img = new Image();
@@ -68,7 +68,7 @@ export const exportSingleDocument = async (
       format: [img.width, img.height],
     });
     
-    pdf.addImage(dataURL, 'PNG', 0, 0, img.width, img.height);
+    pdf.addImage(dataURL, 'JPEG', 0, 0, img.width, img.height);
     const pdfBlob = pdf.output('blob');
     
     return { blob: pdfBlob, filename: `${filename}.pdf` };
@@ -227,7 +227,7 @@ export const exportSinglePDF = async (
 
   // Render first row to get page dimensions
   renderRow(excelData[0]);
-  const firstDataURL = stage.toDataURL({ pixelRatio: 2 });
+  const firstDataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
 
   const img = new Image();
   await new Promise<void>((resolve) => {
@@ -244,14 +244,14 @@ export const exportSinglePDF = async (
     format: [pageW, pageH],
   });
 
-  pdf.addImage(firstDataURL, 'PNG', 0, 0, pageW, pageH);
+  pdf.addImage(firstDataURL, 'JPEG', 0, 0, pageW, pageH);
   if (onProgress) onProgress(1, excelData.length);
 
   for (let i = 1; i < excelData.length; i++) {
     renderRow(excelData[i]);
-    const dataURL = stage.toDataURL({ pixelRatio: 2 });
+    const dataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
     pdf.addPage([pageW, pageH]);
-    pdf.addImage(dataURL, 'PNG', 0, 0, pageW, pageH);
+    pdf.addImage(dataURL, 'JPEG', 0, 0, pageW, pageH);
     if (onProgress) onProgress(i + 1, excelData.length);
   }
 

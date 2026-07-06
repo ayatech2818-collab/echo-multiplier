@@ -170,7 +170,7 @@ export default function ExportControls({
               type="button"
             >
               <FileImage size={18} strokeWidth={1.75} />
-              PNG
+              JPG
             </button>
             <button
               onClick={() => onOutputFormatChange('pdf')}
