@@ -1,14 +1,15 @@
-import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import jsPDF from 'jspdf';
-import { ExcelRow, CanvasField, OutputFormat } from '@/types';
-import { sanitizeFilename, resolveFieldText } from './utils';
-import { layoutCombined, resolveSegmentText } from './combinedLayout';
 import Konva from 'konva';
+import { ExcelRow, CanvasField, OutputFormat, ImageAsset } from '@/types';
+import { sanitizeFilename, resolveFieldText, isTextField } from './utils';
+import { layoutCombined, resolveSegmentText } from './combinedLayout';
+import { effectiveFontSize, measureText } from './measure';
+import { buildAssetIndex, AssetIndex } from './assets';
+import { computeMediaLayout, resolveMediaSource } from './mediaField';
 
 /**
  * Maximum in-memory size for a single ZIP archive before auto-splitting (150 MB).
- * Based on the base64-decoded byte size of all blobs accumulated so far.
+ * Based on the byte size of all blobs accumulated so far.
  */
 const ZIP_SIZE_LIMIT_BYTES = 150 * 1024 * 1024;
 
@@ -18,13 +19,61 @@ const ZIP_SIZE_LIMIT_BYTES = 150 * 1024 * 1024;
  */
 const PDF_PAGE_LIMIT = 200;
 
+/** Longest side (px) of an exported page. Keeps huge templates from exhausting canvas memory. */
+const MAX_EXPORT_SIDE = 4096;
+/** Lower cap on phones/tablets, where canvas memory is tighter. */
+const MAX_EXPORT_SIDE_MOBILE = 3000;
+
+export class ExportCancelledError extends Error {
+  constructor() {
+    super('Export cancelled');
+    this.name = 'ExportCancelledError';
+  }
+}
+
+export interface ExportVolume {
+  blob: Blob;
+  startRecord: number;
+  endRecord: number;
+}
+
+/** Everything needed to render documents for one template. */
+export interface ExportJob {
+  templateImage: HTMLImageElement;
+  fields: CanvasField[];
+  assets: ImageAsset[];
+}
+
+/** Mutable counters filled while exporting so the UI can report problems afterwards. */
+export interface ExportStats {
+  missingMedia: number;
+}
+
+export interface ExportOptions {
+  /** How many documents share one page/sheet (1 = one per page). */
+  perSheet?: number;
+  onProgress?: (current: number, total: number) => void;
+  signal?: AbortSignal;
+  stats?: ExportStats;
+}
+
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) throw new ExportCancelledError();
+};
+
+/** Let the browser paint / handle input between rows so the progress bar keeps moving. */
+const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+const isSmallDevice = () =>
+  typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
 /**
  * When no filename template is given, name each file after a field the user placed on the template.
- * Priority: the first single-column field, else the first column segment inside a combined field.
+ * Priority: the first single-column text field, else the first column segment inside a combined field.
  * Returns '' when no data-backed field is placed (caller falls back to a numbered name).
  */
-const autoNameValue = (canvasFields: CanvasField[], rowData: ExcelRow): string => {
-  const columnField = canvasFields.find((f) => !f.isStatic && !f.segments);
+export const autoNameValue = (canvasFields: CanvasField[], rowData: ExcelRow): string => {
+  const columnField = canvasFields.find((f) => isTextField(f) && !f.isStatic && !f.segments);
   if (columnField) return resolveFieldText(columnField, rowData);
 
   for (const field of canvasFields) {
@@ -35,40 +84,130 @@ const autoNameValue = (canvasFields: CanvasField[], rowData: ExcelRow): string =
 };
 
 export const generateFilename = (template: string, rowData: ExcelRow, fallback: string): string => {
-  let filename = template.trim();
+  const filename = template.trim();
 
   if (!filename) {
     return fallback;
   }
-  
+
   // Replace {{HeaderName}} with actual values
-  const matches = filename.match(/\{\{([^}]+)\}\}/g);
-  if (matches) {
-    matches.forEach((match) => {
-      const headerName = match.replace(/\{\{|\}\}/g, '').trim();
-      const value = rowData[headerName] ?? 'Unknown';
-      filename = filename.replace(match, String(value));
-    });
-  }
-  
+  const replaced = filename.replace(/\{\{([^}]+)\}\}/g, (_match, header: string) => {
+    const value = rowData[header.trim()];
+    return value === undefined || value === null || String(value) === '' ? 'Unknown' : String(value);
+  });
+
   // Sanitize the filename to remove invalid characters
-  return sanitizeFilename(filename) || fallback;
+  return sanitizeFilename(replaced) || fallback;
 };
 
-/** Render a row onto the text layer (shared helper). */
-const renderRowOnLayer = (
-  textLayer: Konva.Layer,
-  canvasFields: CanvasField[],
-  rowData: ExcelRow
+/** An offscreen Konva stage at the template's native size (independent of the on-screen preview). */
+const createExportStage = (templateImage: HTMLImageElement) => {
+  const container = document.createElement('div');
+  const stage = new Konva.Stage({
+    container,
+    width: templateImage.width,
+    height: templateImage.height,
+  });
+  const bgLayer = new Konva.Layer({ listening: false });
+  bgLayer.add(new Konva.Image({ image: templateImage, width: templateImage.width, height: templateImage.height }));
+  const layer = new Konva.Layer({ listening: false });
+  stage.add(bgLayer);
+  stage.add(layer);
+  return { stage, layer };
+};
+
+const addMediaNode = (
+  layer: Konva.Layer,
+  field: CanvasField,
+  rowData: ExcelRow,
+  assets: AssetIndex,
+  stats?: ExportStats
 ) => {
-  textLayer.destroyChildren();
+  const media = resolveMediaSource(field, rowData, assets);
+  if (!media.source) {
+    if (media.missing && stats) stats.missingMedia += 1;
+    return;
+  }
+  const srcW = media.source instanceof HTMLImageElement ? media.source.naturalWidth || media.source.width : media.source.width;
+  const srcH = media.source instanceof HTMLImageElement ? media.source.naturalHeight || media.source.height : media.source.height;
+  const m = computeMediaLayout(field, srcW, srcH);
+  const circle = field.kind === 'image' && field.shape === 'circle';
+
+  const group = new Konva.Group({
+    x: field.x,
+    y: field.y,
+    opacity: field.opacity ?? 1,
+    clipFunc: circle
+      ? (ctx) => {
+          ctx.beginPath();
+          ctx.ellipse(m.w / 2, m.h / 2, m.w / 2, m.h / 2, 0, 0, Math.PI * 2);
+          ctx.closePath();
+        }
+      : undefined,
+  });
+  if (field.kind !== 'image') {
+    // Codes always sit on a white plate so they stay scannable on any background.
+    group.add(new Konva.Rect({ x: 0, y: 0, width: m.w, height: m.h, fill: '#ffffff' }));
+  }
+  group.add(
+    new Konva.Image({
+      image: media.source,
+      x: m.dx,
+      y: m.dy,
+      width: m.dw,
+      height: m.dh,
+      crop: m.crop,
+    })
+  );
+  layer.add(group);
+
+  if (field.borderWidth && field.borderWidth > 0) {
+    const stroke = field.borderColor || '#000000';
+    layer.add(
+      circle
+        ? new Konva.Ellipse({
+            x: field.x + m.w / 2,
+            y: field.y + m.h / 2,
+            radiusX: m.w / 2,
+            radiusY: m.h / 2,
+            stroke,
+            strokeWidth: field.borderWidth,
+            opacity: field.opacity ?? 1,
+          })
+        : new Konva.Rect({
+            x: field.x,
+            y: field.y,
+            width: m.w,
+            height: m.h,
+            stroke,
+            strokeWidth: field.borderWidth,
+            opacity: field.opacity ?? 1,
+          })
+    );
+  }
+};
+
+/** Render one row's fields onto the (cleared) layer. */
+const renderRowOnLayer = (
+  layer: Konva.Layer,
+  canvasFields: CanvasField[],
+  rowData: ExcelRow,
+  assets: AssetIndex,
+  stats?: ExportStats
+) => {
+  layer.destroyChildren();
 
   canvasFields.forEach((field) => {
+    if (!isTextField(field)) {
+      addMediaNode(layer, field, rowData, assets, stats);
+      return;
+    }
+
     // Combined field: render one text node per laid-out run.
     if (field.segments) {
       const { runs, offsetX } = layoutCombined(field, rowData);
       runs.forEach((run) => {
-        textLayer.add(
+        layer.add(
           new Konva.Text({
             x: field.x + run.x - offsetX,
             y: field.y + run.y,
@@ -86,217 +225,332 @@ const renderRowOnLayer = (
     // Single-column or static field.
     const value = resolveFieldText(field, rowData);
     const textAlign = field.align || 'center';
-    const text = new Konva.Text({
-      x: field.x,
-      y: field.y,
-      text: value,
-      fontSize: field.fontSize,
-      fill: field.fill,
-      fontStyle: field.fontStyle,
-      fontFamily: field.fontFamily || 'Arial',
-    });
-
-    const textWidth = text.width();
+    const fontSize = effectiveFontSize(field, value);
+    const fontFamily = field.fontFamily || 'Arial';
+    const textWidth = measureText(value, fontSize, field.fontStyle, fontFamily);
     let offsetX = 0;
     if (textAlign === 'center') offsetX = textWidth / 2;
     else if (textAlign === 'right') offsetX = textWidth;
 
-    text.offsetX(offsetX);
-    textLayer.add(text);
+    layer.add(
+      new Konva.Text({
+        x: field.x,
+        y: field.y,
+        text: value,
+        fontSize,
+        fill: field.fill,
+        fontStyle: field.fontStyle,
+        fontFamily,
+        offsetX,
+      })
+    );
   });
 
-  textLayer.batchDraw();
+  layer.draw();
 };
 
-export const exportSingleDocument = async (
-  stage: Konva.Stage,
-  filename: string,
-  format: OutputFormat
-): Promise<{ blob: Blob; filename: string }> => {
-  const dataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
-  
-  if (format === 'image') {
-    const response = await fetch(dataURL);
-    const blob = await response.blob();
-    return { blob, filename: `${filename}.jpg` };
-  } else {
-    // PDF export
+interface RenderTarget {
+  stage: Konva.Stage;
+  layer: Konva.Layer;
+  pixelRatio: number;
+}
+
+const createTarget = (job: ExportJob): RenderTarget => {
+  const { stage, layer } = createExportStage(job.templateImage);
+  const cap = isSmallDevice() ? MAX_EXPORT_SIDE_MOBILE : MAX_EXPORT_SIDE;
+  const longest = Math.max(job.templateImage.width, job.templateImage.height);
+  return { stage, layer, pixelRatio: Math.min(1, cap / longest) };
+};
+
+const renderToDataURL = (
+  target: RenderTarget,
+  job: ExportJob,
+  index: AssetIndex,
+  row: ExcelRow,
+  stats: ExportStats | undefined,
+  mimeType: 'image/jpeg' | 'image/png'
+): string => {
+  renderRowOnLayer(target.layer, job.fields, row, index, stats);
+  return target.stage.toDataURL({ pixelRatio: target.pixelRatio, mimeType, quality: 0.92 });
+};
+
+const dataUrlToBlob = async (dataURL: string): Promise<Blob> => {
+  const response = await fetch(dataURL);
+  return response.blob();
+};
+
+const loadDataUrl = (dataURL: string): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
     const img = new Image();
-    await new Promise((resolve) => {
-      img.onload = resolve;
-      img.src = dataURL;
-    });
-    
-    const pdf = new jsPDF({
-      orientation: img.width > img.height ? 'landscape' : 'portrait',
-      unit: 'px',
-      format: [img.width, img.height],
-    });
-    
-    pdf.addImage(dataURL, 'JPEG', 0, 0, img.width, img.height);
-    const pdfBlob = pdf.output('blob');
-    
-    return { blob: pdfBlob, filename: `${filename}.pdf` };
-  }
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to render page'));
+    img.src = dataURL;
+  });
+
+const destroyTarget = (target: RenderTarget) => {
+  target.stage.destroy();
+};
+
+/** Choices offered for "documents per page". */
+export const SHEET_SIZES = [1, 2, 4, 6, 9] as const;
+
+/** Rows × columns used to tile `n` documents; wide documents stack, tall ones sit side by side. */
+export const sheetGrid = (n: number, docW: number, docH: number): { cols: number; rows: number } => {
+  if (n <= 1) return { cols: 1, rows: 1 };
+  const wide = docW >= docH;
+  if (n === 2) return wide ? { cols: 1, rows: 2 } : { cols: 2, rows: 1 };
+  if (n === 6) return wide ? { cols: 2, rows: 3 } : { cols: 3, rows: 2 };
+  const cols = Math.ceil(Math.sqrt(n));
+  return { cols, rows: Math.ceil(n / cols) };
+};
+
+const SHEET_MARGIN = 0.03; // of the shorter document side; also the gap between documents
+
+/** Render one sheet (1..perSheet documents) to a JPEG data URL. */
+const renderSheetToDataURL = (
+  target: RenderTarget,
+  job: ExportJob,
+  index: AssetIndex,
+  rows: ExcelRow[],
+  perSheet: number,
+  stats?: ExportStats
+): string => {
+  if (perSheet <= 1) return renderToDataURL(target, job, index, rows[0], stats, 'image/jpeg');
+
+  const W = job.templateImage.width;
+  const H = job.templateImage.height;
+  const { cols, rows: gridRows } = sheetGrid(perSheet, W, H);
+  const pad = Math.min(W, H) * SHEET_MARGIN;
+  const sheetW = cols * W + (cols + 1) * pad;
+  const sheetH = gridRows * H + (gridRows + 1) * pad;
+  const cap = isSmallDevice() ? MAX_EXPORT_SIDE_MOBILE : MAX_EXPORT_SIDE;
+  const pr = Math.min(1, cap / Math.max(sheetW, sheetH));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sheetW * pr));
+  canvas.height = Math.max(1, Math.round(sheetH * pr));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas is not available on this device');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  rows.forEach((row, i) => {
+    renderRowOnLayer(target.layer, job.fields, row, index, stats);
+    const doc = target.stage.toCanvas({ pixelRatio: pr });
+    const col = i % cols;
+    const r = Math.floor(i / cols);
+    const x = (pad + col * (W + pad)) * pr;
+    const y = (pad + r * (H + pad)) * pr;
+    ctx.drawImage(doc, x, y, W * pr, H * pr);
+    // Hairline so the documents can be cut apart.
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 0.5, y - 0.5, W * pr + 1, H * pr + 1);
+  });
+
+  const url = canvas.toDataURL('image/jpeg', 0.92);
+  // Free the big bitmap right away (matters on phones).
+  canvas.width = canvas.height = 0;
+  return url;
+};
+
+const chunk = <T,>(items: T[], size: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 };
 
 /**
- * Export a batch of rows to one or more ZIP archives.
- * When the estimated in-memory size of the current ZIP exceeds ZIP_SIZE_LIMIT_BYTES
- * the current archive is sealed and a new one is started automatically.
- *
- * Returns an array of { blob, startRecord, endRecord } objects – one entry per
- * auto-split volume.  The caller is responsible for naming and downloading each.
+ * Export a set of rows as one or more ZIP archives (one JPG or PDF per document, or per sheet when
+ * several documents share a page). When the in-memory size of the current ZIP exceeds
+ * ZIP_SIZE_LIMIT_BYTES the archive is sealed and a new one started. `startIndex`/`totalRecords`
+ * position this batch within the whole run for naming and progress.
  */
 export const exportBatch = async (
-  stage: Konva.Stage,
-  textLayer: Konva.Layer,
-  canvasFields: CanvasField[],
-  excelData: ExcelRow[],
+  job: ExportJob,
+  rows: ExcelRow[],
   filenameTemplate: string,
   format: OutputFormat,
-  onProgress?: (current: number, total: number) => void,
+  options: ExportOptions = {},
   startIndex: number = 0,
-  totalRecords: number = excelData.length
-): Promise<{ blob: Blob; startRecord: number; endRecord: number }[]> => {
-  const volumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
+  totalRecords: number = rows.length,
+  progressOffset: number = 0,
+  progressTotal: number = totalRecords
+): Promise<ExportVolume[]> => {
+  const { default: JSZip } = await import('jszip');
+  const { default: jsPDF } = await import('jspdf');
+  const { onProgress, signal, stats } = options;
+  const perSheet = Math.max(1, options.perSheet ?? 1);
+  const volumes: ExportVolume[] = [];
+  const index = buildAssetIndex(job.assets);
+  const target = createTarget(job);
 
   let zip = new JSZip();
   let usedNames = new Map<string, number>();
-  /** Rough byte estimate of blobs added to the current zip (uncompressed). */
   let currentZipBytes = 0;
-  /** Global record index of the first row in the current zip volume. */
   let volumeStart = startIndex + 1;
 
-  for (let i = 0; i < excelData.length; i++) {
-    const rowData = excelData[i];
-    const recordNumber = startIndex + i + 1;
+  try {
+    const groups = chunk(rows, perSheet);
+    let done = 0;
+    for (let g = 0; g < groups.length; g++) {
+      throwIfAborted(signal);
+      const group = groups[g];
+      const firstRecord = startIndex + done + 1;
+      const lastRecord = startIndex + done + group.length;
 
-    renderRowOnLayer(textLayer, canvasFields, rowData);
+      let filename: string;
+      if (perSheet > 1) {
+        const sheetNo = Math.floor((startIndex + done) / perSheet) + 1;
+        filename = `sheet-${String(sheetNo).padStart(3, '0')} (records ${firstRecord}-${lastRecord})`;
+      } else {
+        const rowData = group[0];
+        const auto = sanitizeFilename(autoNameValue(job.fields, rowData));
+        filename = generateFilename(filenameTemplate, rowData, auto || `document-${firstRecord}`);
+      }
 
-    // Generate filename
-    const auto = sanitizeFilename(autoNameValue(canvasFields, rowData));
-    const fallback = auto || `document-${recordNumber}`;
-    let filename = generateFilename(filenameTemplate, rowData, fallback);
+      // Ensure uniqueness within this zip volume
+      const count = usedNames.get(filename) ?? 0;
+      usedNames.set(filename, count + 1);
+      if (count > 0) filename = `${filename} (${count + 1})`;
 
-    // Ensure uniqueness within this zip volume
-    const count = usedNames.get(filename) ?? 0;
-    usedNames.set(filename, count + 1);
-    if (count > 0) filename = `${filename} (${count + 1})`;
+      const dataURL = renderSheetToDataURL(target, job, index, group, perSheet, stats);
+      let blob: Blob;
+      let fullFilename: string;
+      if (format === 'image') {
+        blob = await dataUrlToBlob(dataURL);
+        fullFilename = `${filename}.jpg`;
+      } else {
+        const img = await loadDataUrl(dataURL);
+        const pdf = new jsPDF({
+          orientation: img.width > img.height ? 'landscape' : 'portrait',
+          unit: 'px',
+          format: [img.width, img.height],
+        });
+        pdf.addImage(dataURL, 'JPEG', 0, 0, img.width, img.height);
+        blob = pdf.output('blob');
+        fullFilename = `${filename}.pdf`;
+      }
 
-    // Export document
-    const { blob, filename: fullFilename } = await exportSingleDocument(stage, filename, format);
-    const blobSize = blob.size;
+      // Seal the current zip and start a new volume if this file would bust the size limit.
+      if (currentZipBytes > 0 && currentZipBytes + blob.size > ZIP_SIZE_LIMIT_BYTES) {
+        volumes.push({
+          blob: await zip.generateAsync({ type: 'blob' }),
+          startRecord: volumeStart,
+          endRecord: firstRecord - 1,
+        });
+        zip = new JSZip();
+        usedNames = new Map<string, number>();
+        usedNames.set(filename, 1);
+        currentZipBytes = 0;
+        volumeStart = firstRecord;
+      }
 
-    // Check if adding this file would bust the size limit AND we have at least one file already.
-    if (currentZipBytes > 0 && currentZipBytes + blobSize > ZIP_SIZE_LIMIT_BYTES) {
-      // Seal the current zip and start a new volume.
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      volumes.push({ blob: zipBlob, startRecord: volumeStart, endRecord: recordNumber - 1 });
+      zip.file(fullFilename, blob);
+      currentZipBytes += blob.size;
+      done += group.length;
 
-      zip = new JSZip();
-      usedNames = new Map<string, number>();
-      currentZipBytes = 0;
-      volumeStart = recordNumber;
+      onProgress?.(progressOffset + done, progressTotal);
+      await yieldToBrowser();
     }
 
-    zip.file(fullFilename, blob);
-    currentZipBytes += blobSize;
-
-    if (onProgress) {
-      onProgress(recordNumber, totalRecords);
+    if (currentZipBytes > 0) {
+      volumes.push({
+        blob: await zip.generateAsync({ type: 'blob' }),
+        startRecord: volumeStart,
+        endRecord: startIndex + rows.length,
+      });
     }
-  }
-
-  // Seal the final (or only) volume.
-  if (currentZipBytes > 0) {
-    const zipBlob = await zip.generateAsync({ type: 'blob' });
-    volumes.push({
-      blob: zipBlob,
-      startRecord: volumeStart,
-      endRecord: startIndex + excelData.length,
-    });
+  } finally {
+    destroyTarget(target);
   }
 
   return volumes;
 };
 
 /**
- * Export all rows as one or more PDFs.
- * When the page count hits PDF_PAGE_LIMIT the current PDF is sealed and a
- * new volume started, preventing "Invalid string length" crashes.
- *
- * Returns an array of { blob, startRecord, endRecord } objects.
+ * Export all rows as one or more PDFs (one page per document, or per sheet when several share a page).
+ * When the page count hits PDF_PAGE_LIMIT the current PDF is sealed and a new volume started,
+ * preventing "Invalid string length" crashes.
  */
 export const exportSinglePDF = async (
-  stage: Konva.Stage,
-  textLayer: Konva.Layer,
-  canvasFields: CanvasField[],
-  excelData: ExcelRow[],
-  onProgress?: (current: number, total: number) => void,
-): Promise<{ blob: Blob; startRecord: number; endRecord: number }[]> => {
-  if (excelData.length === 0) throw new Error('No data to export');
+  job: ExportJob,
+  rows: ExcelRow[],
+  options: ExportOptions = {},
+  progressOffset: number = 0,
+  progressTotal: number = rows.length
+): Promise<ExportVolume[]> => {
+  if (rows.length === 0) throw new Error('No data to export');
+  const { default: jsPDF } = await import('jspdf');
+  const { onProgress, signal, stats } = options;
+  const perSheet = Math.max(1, options.perSheet ?? 1);
+  const volumes: ExportVolume[] = [];
+  const index = buildAssetIndex(job.assets);
+  const target = createTarget(job);
 
-  const volumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
+  try {
+    const groups = chunk(rows, perSheet);
+    const firstURL = renderSheetToDataURL(target, job, index, groups[0], perSheet, stats);
+    const first = await loadDataUrl(firstURL);
+    const pageW = first.width;
+    const pageH = first.height;
+    const orientation = pageW > pageH ? 'landscape' : 'portrait';
 
-  // Render first row to get page dimensions
-  renderRowOnLayer(textLayer, canvasFields, excelData[0]);
-  const firstDataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
+    let pdf = new jsPDF({ orientation, unit: 'px', format: [pageW, pageH] });
+    pdf.addImage(firstURL, 'JPEG', 0, 0, pageW, pageH);
+    let done = groups[0].length;
+    onProgress?.(progressOffset + done, progressTotal);
 
-  const img = new Image();
-  await new Promise<void>((resolve) => {
-    img.onload = () => resolve();
-    img.src = firstDataURL;
-  });
+    let pagesInCurrentVolume = 1;
+    let volumeStart = 1;
 
-  const pageW = img.width;
-  const pageH = img.height;
+    for (let g = 1; g < groups.length; g++) {
+      throwIfAborted(signal);
+      const firstRecord = done + 1;
 
-  let pdf = new jsPDF({
-    orientation: pageW > pageH ? 'landscape' : 'portrait',
-    unit: 'px',
-    format: [pageW, pageH],
-  });
+      if (pagesInCurrentVolume >= PDF_PAGE_LIMIT) {
+        volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: done });
+        pdf = new jsPDF({ orientation, unit: 'px', format: [pageW, pageH] });
+        pagesInCurrentVolume = 0;
+        volumeStart = firstRecord;
+      }
 
-  pdf.addImage(firstDataURL, 'JPEG', 0, 0, pageW, pageH);
-  if (onProgress) onProgress(1, excelData.length);
+      const dataURL = renderSheetToDataURL(target, job, index, groups[g], perSheet, stats);
+      if (pagesInCurrentVolume > 0) pdf.addPage([pageW, pageH]);
+      pdf.addImage(dataURL, 'JPEG', 0, 0, pageW, pageH);
+      pagesInCurrentVolume++;
+      done += groups[g].length;
 
-  let pagesInCurrentVolume = 1;
-  let volumeStart = 1;
-
-  for (let i = 1; i < excelData.length; i++) {
-    const recordNumber = i + 1;
-
-    // Seal and start new volume if we hit the page cap
-    if (pagesInCurrentVolume >= PDF_PAGE_LIMIT) {
-      volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: i });
-      pdf = new jsPDF({
-        orientation: pageW > pageH ? 'landscape' : 'portrait',
-        unit: 'px',
-        format: [pageW, pageH],
-      });
-      pagesInCurrentVolume = 0;
-      volumeStart = recordNumber;
+      onProgress?.(progressOffset + done, progressTotal);
+      await yieldToBrowser();
     }
 
-    renderRowOnLayer(textLayer, canvasFields, excelData[i]);
-    const dataURL = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/jpeg', quality: 0.92 });
-
-    if (pagesInCurrentVolume > 0) {
-      pdf.addPage([pageW, pageH]);
-    }
-    pdf.addImage(dataURL, 'JPEG', 0, 0, pageW, pageH);
-    pagesInCurrentVolume++;
-
-    if (onProgress) onProgress(recordNumber, excelData.length);
+    volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: rows.length });
+  } finally {
+    destroyTarget(target);
   }
-
-  // Seal final volume
-  volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: excelData.length });
 
   return volumes;
 };
 
 export const downloadZip = (blob: Blob, filename: string = 'documents.zip') => {
   saveAs(blob, filename);
+};
+
+/** Size a media field is given when first placed, relative to the template. */
+export const defaultMediaBox = (
+  kind: 'image' | 'qr' | 'barcode',
+  templateW: number,
+  templateH: number,
+  src?: { w: number; h: number }
+): { width: number; height: number } => {
+  const base = Math.round(Math.min(templateW, templateH) * 0.22);
+  if (kind === 'barcode') return { width: Math.round(base * 1.8), height: Math.round(base * 0.7) };
+  if (kind === 'qr') return { width: base, height: base };
+  if (src && src.w > 0 && src.h > 0) {
+    // Static image: keep its aspect ratio, fit within the base box.
+    const s = Math.min(base * 1.5 / src.w, base * 1.5 / src.h);
+    return { width: Math.max(16, Math.round(src.w * s)), height: Math.max(16, Math.round(src.h * s)) };
+  }
+  return { width: base, height: base };
 };

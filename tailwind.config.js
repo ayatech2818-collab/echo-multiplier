@@ -1,5 +1,10 @@
 /** @type {import('tailwindcss').Config} */
+// Colors are CSS variables (space-separated RGB channels, see app/globals.css) so every utility,
+// including opacity modifiers like `bg-accent/10`, works in both light and dark mode.
+const c = (name) => `rgb(var(--c-${name}) / <alpha-value>)`;
+
 module.exports = {
+  darkMode: 'class',
   content: [
     './pages/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
@@ -9,28 +14,37 @@ module.exports = {
     extend: {
       colors: {
         // Page + surfaces
-        page: '#f8fafc', // slate-50
-        surface: '#ffffff',
-        line: '#e2e8f0', // slate-200
-        'line-strong': '#cbd5e1', // slate-300
+        page: c('page'),
+        surface: c('surface'),
+        line: c('line'),
+        'line-strong': c('line-strong'),
         // Text
-        ink: '#0f172a', // slate-900
-        muted: '#475569', // slate-600 (>=4.5:1 on white)
-        faint: '#94a3b8', // slate-400 (non-essential only)
+        ink: c('ink'),
+        muted: c('muted'),
+        faint: c('faint'),
         // Accent
         accent: {
-          DEFAULT: '#2563eb', // blue-600
-          hover: '#1d4ed8', // blue-700
-          soft: '#eff6ff', // blue-50
+          DEFAULT: c('accent'),
+          hover: c('accent-hover'),
+          soft: c('accent-soft'),
         },
         success: {
-          DEFAULT: '#059669', // emerald-600
-          hover: '#047857', // emerald-700
-          soft: '#ecfdf5', // emerald-50
+          DEFAULT: c('success'),
+          hover: c('success-hover'),
+          soft: c('success-soft'),
         },
         danger: {
-          DEFAULT: '#dc2626', // red-600
-          soft: '#fef2f2', // red-50
+          DEFAULT: c('danger'),
+          soft: c('danger-soft'),
+        },
+        warn: {
+          DEFAULT: c('warn'),
+          soft: c('warn-soft'),
+        },
+        violet: {
+          DEFAULT: c('violet'),
+          hover: c('violet-hover'),
+          soft: c('violet-soft'),
         },
       },
       fontFamily: {
@@ -39,6 +53,9 @@ module.exports = {
       boxShadow: {
         soft: '0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.06)',
         pop: '0 4px 16px rgba(15, 23, 42, 0.10), 0 1px 3px rgba(15, 23, 42, 0.06)',
+      },
+      minHeight: {
+        screen: '100dvh',
       },
     },
   },

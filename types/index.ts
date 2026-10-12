@@ -1,6 +1,20 @@
 export type FontStyle = 'normal' | 'bold' | 'italic' | 'bold italic';
 export type TextAlign = 'left' | 'center' | 'right';
 
+// What a placed field renders. Undefined means 'text' (keeps older saved layouts working).
+export type FieldKind = 'text' | 'image' | 'qr' | 'barcode';
+
+export type FormatType = 'none' | 'upper' | 'lower' | 'title' | 'number' | 'currency' | 'date';
+
+// Display formatting applied to a single-column field's value (preview and export share it).
+export interface FieldFormat {
+  type: FormatType;
+  // number/currency: decimals ("2"), currency: symbol ("₹"), date: pattern ("DD MMM YYYY").
+  pattern?: string;
+  decimals?: number;
+  symbol?: string;
+}
+
 // One part of a combined field. A combined field is an ordered list of these.
 // `type: 'column'` looks up `value` as an Excel header; `type: 'text'` renders `value` literally
 // (including separators like ", " or a single space). Each segment can override the field's base
@@ -34,6 +48,27 @@ export interface CanvasField {
   // instead of a single value. `width` is an optional wrap width in canvas px (undefined = single line).
   segments?: CombinedSegment[];
   width?: number;
+
+  // ---- Media fields (image / qr / barcode) ----
+  kind?: FieldKind;
+  height?: number;
+  // Static image: the library key of the chosen image (its lowercase file name).
+  imageSrc?: string;
+  // Per-row image / qr / barcode: the dataset column that supplies the value.
+  imageColumn?: string;
+  // QR / barcode with fixed text (no column): the literal value to encode.
+  codeText?: string;
+  fit?: 'contain' | 'cover';
+  shape?: 'rect' | 'circle';
+  borderWidth?: number;
+  borderColor?: string;
+  opacity?: number; // 0..1
+  lockRatio?: boolean;
+
+  // ---- Text extras ----
+  // Shrink the font until the text fits within `width` (single-column fields only).
+  autoFit?: boolean;
+  format?: FieldFormat;
 }
 
 // A reusable combined-field definition built in the CombinedFieldBuilder. Backs a placeable chip;
@@ -58,14 +93,42 @@ export interface ExcelRow {
 export type OutputFormat = 'image' | 'pdf' | 'single-pdf';
 export type ExportBatchSize = 50 | 100 | 250 | 500 | 'all';
 
-export interface AppState {
-  templateImage: HTMLImageElement | null;
-  excelHeaders: string[];
-  excelData: ExcelRow[];
-  canvasFields: CanvasField[];
-  selectedFieldId: string | null;
-  outputFormat: OutputFormat;
-  exportBatchSize: ExportBatchSize;
+// A template background (one per uploaded image, or one per page of a multi-page PDF).
+export interface TemplateItem {
+  id: string;
+  name: string;
+  image: HTMLImageElement;
+}
+
+// One parsed dataset file. Datasets are merged (rows concatenated, headers unioned) for use.
+export interface DatasetItem {
+  id: string;
+  name: string;
+  headers: string[];
+  rows: ExcelRow[];
+}
+
+// An uploaded image in the library, used by static image fields and per-row image columns.
+export interface ImageAsset {
+  id: string;
+  name: string; // original file name
+  key: string; // lowercase file name, used to match dataset values
+  image: HTMLImageElement;
+  thumb: string; // small data URL for the library UI
+}
+
+export type NoticeKind = 'error' | 'warning' | 'success' | 'info';
+export interface Notice {
+  id: string;
+  kind: NoticeKind;
+  message: string;
+}
+
+// A saved layout (JSON file / localStorage). Templates, data and images are NOT embedded.
+export interface LayoutFile {
+  version: 1;
+  fields: CanvasField[];
+  combinedFields: CombinedFieldDef[];
   filenameTemplate: string;
-  previewMode: boolean;
+  outputFormat: OutputFormat;
 }

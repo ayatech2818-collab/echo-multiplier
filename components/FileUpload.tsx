@@ -1,59 +1,47 @@
 'use client';
 
-import { Upload, CheckCircle2, Loader2 } from 'lucide-react';
+import { Upload, Loader2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 
 interface FileUploadProps {
   label: string;
   accept: string;
-  onFileSelect: (file: File) => void | Promise<void>;
+  /** Called with every chosen/dropped file (one element unless `multiple`). */
+  onFilesSelect: (files: File[]) => void | Promise<void>;
+  multiple?: boolean;
   disabled?: boolean;
   hint?: string;
-  selectedFileName?: string | null;
+  /** Show a smaller drop zone (used once a card already lists files). */
+  compact?: boolean;
 }
 
+/** A drag-and-drop / click-to-browse zone. Each card in Step 1 lists its own files below it. */
 export default function FileUpload({
   label,
   accept,
-  onFileSelect,
+  onFilesSelect,
+  multiple = false,
   disabled,
-  hint = 'Drag & drop or click to browse',
-  selectedFileName,
+  hint = 'Drag & drop or tap to browse',
+  compact = false,
 }: FileUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [processingName, setProcessingName] = useState<string | null>(null);
 
-  const select = async (file: File) => {
+  const select = async (list: FileList | null) => {
+    const files = Array.from(list ?? []);
+    if (files.length === 0) return;
     setIsProcessing(true);
-    setProcessingName(file.name);
     try {
-      await onFileSelect(file);
+      await onFilesSelect(multiple ? files : files.slice(0, 1));
     } finally {
       setIsProcessing(false);
-      setProcessingName(null);
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (disabled || isProcessing) return;
-    const file = e.dataTransfer.files[0];
-    if (file) void select(file);
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) void select(file);
-    // Allow re-selecting the same file later
-    e.target.value = '';
-  };
-
-  const open = () => !disabled && !isProcessing && inputRef.current?.click();
-  const loaded = !!selectedFileName && !isProcessing;
   const interactive = !disabled && !isProcessing;
+  const open = () => interactive && inputRef.current?.click();
 
   return (
     <div
@@ -68,72 +56,54 @@ export default function FileUpload({
           open();
         }
       }}
-      onDrop={handleDrop}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (interactive) void select(e.dataTransfer.files);
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         if (interactive) setIsDragging(true);
       }}
       onDragLeave={() => setIsDragging(false)}
-      className={`group relative flex min-h-[168px] flex-col items-center justify-center rounded-2xl border px-6 py-8 text-center transition-all ${
+      className={`group flex flex-col items-center justify-center rounded-xl border-2 border-dashed text-center transition-all ${
+        compact ? 'min-h-[88px] px-4 py-4' : 'min-h-[132px] px-4 py-6'
+      } ${
         disabled
-          ? 'cursor-not-allowed border-line bg-surface opacity-50'
+          ? 'cursor-not-allowed border-line opacity-50'
           : isProcessing
           ? 'cursor-wait border-accent/40 bg-accent-soft/40'
           : isDragging
-          ? 'cursor-pointer border-accent bg-accent-soft ring-4 ring-accent/15'
-          : loaded
-          ? 'cursor-pointer border-success/50 bg-success-soft hover:shadow-soft'
-          : 'cursor-pointer border-line bg-surface hover:border-accent/50 hover:shadow-soft'
+          ? 'cursor-pointer border-accent bg-accent-soft'
+          : 'cursor-pointer border-line-strong hover:border-accent/60 hover:bg-accent-soft/40'
       }`}
     >
       <input
         ref={inputRef}
         type="file"
         accept={accept}
-        onChange={handleChange}
+        multiple={multiple}
+        onChange={(e) => {
+          void select(e.target.files);
+          // Allow re-selecting the same file later
+          e.target.value = '';
+        }}
         className="hidden"
-        disabled={disabled || isProcessing}
+        disabled={!interactive}
       />
-
       <div
-        className={`mb-3 flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
-          isProcessing
-            ? 'bg-accent/10 text-accent'
-            : loaded
-            ? 'bg-success/10 text-success'
-            : 'bg-accent-soft text-accent'
+        className={`mb-1.5 flex h-9 w-9 items-center justify-center rounded-full ${
+          isProcessing ? 'bg-accent/10 text-accent' : 'bg-accent-soft text-accent'
         }`}
       >
         {isProcessing ? (
-          <Loader2 size={22} strokeWidth={2.25} className="animate-spin" />
-        ) : loaded ? (
-          <CheckCircle2 size={22} strokeWidth={2} />
+          <Loader2 size={18} strokeWidth={2.25} className="animate-spin" />
         ) : (
-          <Upload size={22} strokeWidth={1.75} className="transition-transform group-hover:-translate-y-0.5" />
+          <Upload size={18} strokeWidth={1.75} className="transition-transform group-hover:-translate-y-0.5" />
         )}
       </div>
-
-      <p className="text-base font-semibold text-ink">{label}</p>
-
-      {isProcessing ? (
-        <>
-          <p className="mt-1 max-w-full truncate text-sm font-medium text-accent" title={processingName ?? undefined}>
-            Processing{processingName ? ` ${processingName}` : ''}…
-          </p>
-          <div className="mt-3 h-1.5 w-40 max-w-full overflow-hidden rounded-full bg-accent/15">
-            <div className="animate-indeterminate h-full w-1/3 rounded-full bg-accent" />
-          </div>
-        </>
-      ) : loaded ? (
-        <>
-          <p className="mt-1 max-w-full truncate text-sm font-medium text-success" title={selectedFileName ?? undefined}>
-            {selectedFileName}
-          </p>
-          <p className="mt-1 text-xs text-faint">Click to replace</p>
-        </>
-      ) : (
-        <p className="mt-1 text-sm text-muted">{hint}</p>
-      )}
+      <p className="text-sm font-semibold text-ink">{isProcessing ? 'Working on it…' : label}</p>
+      {!isProcessing && <p className="mt-0.5 text-xs text-muted">{hint}</p>}
     </div>
   );
 }

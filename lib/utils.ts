@@ -3,6 +3,7 @@
  */
 
 import { CanvasField, ExcelRow } from '@/types';
+import { formatValue } from './format';
 
 /**
  * Resolves the display/export text for a single-column or static (custom word) field.
@@ -13,8 +14,15 @@ export const resolveFieldText = (field: CanvasField, row: ExcelRow | null): stri
   if (field.isStatic) return field.headerName;
   if (!row) return field.headerName;
   const value = row[field.headerName];
-  return value === undefined || value === null ? '' : String(value);
+  if (value === undefined || value === null) return '';
+  return formatValue(value, field.format);
 };
+
+/** True for fields that render text (as opposed to image / QR / barcode). */
+export const isTextField = (field: CanvasField): boolean => !field.kind || field.kind === 'text';
+
+/** True for image / QR / barcode fields. */
+export const isMediaField = (field: CanvasField): boolean => !isTextField(field);
 
 /**
  * Validates if a filename template is valid

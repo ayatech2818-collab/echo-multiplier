@@ -15,7 +15,7 @@ import {
 import { CombinedFieldDef, CombinedSegment, ExcelRow, FontStyle } from '@/types';
 import { generateId } from '@/lib/utils';
 import { resolveSegmentText } from '@/lib/combinedLayout';
-import { FONT_FAMILIES } from './StyleToolbar';
+import { FONT_FAMILIES } from '@/lib/fonts';
 
 interface CombinedFieldBuilderProps {
   headers: string[];
@@ -133,9 +133,9 @@ export default function CombinedFieldBuilder({ headers, sampleRow, onAdd }: Comb
                   key={header}
                   type="button"
                   onClick={() => addColumn(header)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-sm font-medium text-ink shadow-sm transition-all hover:-translate-y-0.5 hover:border-violet-300 hover:text-violet-700"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-sm font-medium text-ink shadow-sm transition-all hover:-translate-y-0.5 hover:border-violet/50 hover:text-violet"
                 >
-                  <Database size={14} strokeWidth={2} className="text-violet-600" />
+                  <Database size={14} strokeWidth={2} className="text-violet" />
                   <span className="max-w-[200px] truncate">{header}</span>
                 </button>
               ))}
@@ -163,7 +163,7 @@ export default function CombinedFieldBuilder({ headers, sampleRow, onAdd }: Comb
               type="button"
               onClick={addTypedText}
               disabled={!textInput}
-              className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-ink px-4 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95 disabled:cursor-not-allowed disabled:bg-faint"
+              className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-full bg-ink px-4 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95 disabled:cursor-not-allowed disabled:bg-faint"
             >
               <TypeIcon size={16} strokeWidth={2.25} />
               Add text
@@ -219,7 +219,7 @@ export default function CombinedFieldBuilder({ headers, sampleRow, onAdd }: Comb
 
                   <div className="flex min-w-0 flex-1 items-center gap-1.5">
                     {seg.type === 'column' ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1 text-sm font-medium text-violet-700">
+                      <span className="inline-flex items-center gap-1.5 rounded-md bg-violet-soft px-2 py-1 text-sm font-medium text-violet">
                         <Database size={13} strokeWidth={2} />
                         <span className="max-w-[180px] truncate">{seg.value}</span>
                       </span>
@@ -426,7 +426,7 @@ export default function CombinedFieldBuilder({ headers, sampleRow, onAdd }: Comb
             <button
               type="button"
               onClick={handleAdd}
-              className="flex h-10 items-center justify-center gap-1.5 rounded-full bg-violet-600 px-5 text-sm font-semibold text-white transition-all hover:bg-violet-700 active:scale-95"
+              className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-full bg-violet px-5 text-sm font-semibold text-white transition-all hover:bg-violet-hover active:scale-95"
             >
               <Plus size={16} strokeWidth={2.25} />
               Add to fields
