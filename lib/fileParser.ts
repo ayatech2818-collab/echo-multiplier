@@ -175,7 +175,7 @@ export type UploadKind = 'template' | 'dataset' | 'image';
 const LIMITS: Record<UploadKind, { bytes: number; label: string }> = {
   template: { bytes: 50 * 1024 * 1024, label: '50 MB' },
   dataset: { bytes: 25 * 1024 * 1024, label: '25 MB' },
-  image: { bytes: 15 * 1024 * 1024, label: '15 MB' },
+  image: { bytes: 100 * 1024 * 1024, label: '100 MB' },
 };
 
 /** Returns a plain-language problem with an upload, or null when it looks fine. */
