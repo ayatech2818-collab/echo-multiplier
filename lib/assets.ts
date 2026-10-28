@@ -141,17 +141,93 @@ export const MAX_PDF_IMAGE_PAGES = 2000;
 /** Longer side (px) of the small placeholder shown while a page is being read at full quality. */
 const PAGE_PLACEHOLDER_SIDE = 360;
 
-/** Pages are read from the PDF at this many pixels per PDF point (4 = 288 dpi) when shown large or exported. */
-const FULL_RENDER_SCALE = 4;
+/** Used for pages with no embedded picture (pure text/vector): pixels per PDF point (4 = 288 dpi). */
+const VECTOR_PAGE_SCALE = 4;
+/** Never ask for more than this many pixels per PDF point, even if a picture claims it. */
+const MAX_PAGE_SCALE = 16;
 /** Biggest bitmap we ask the browser for when reading a page (pixels). */
-const FULL_RENDER_MAX_AREA = 120_000_000;
+const FULL_RENDER_MAX_AREA = 150_000_000;
 const FULL_RENDER_MAX_SIDE = 16384;
+
+type Matrix = [number, number, number, number, number, number];
+const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
+// Row-vector convention used by PDF: applying `m` first, then `ctm`.
+const multiply = (m: Matrix, ctm: Matrix): Matrix => [
+  m[0] * ctm[0] + m[1] * ctm[2],
+  m[0] * ctm[1] + m[1] * ctm[3],
+  m[2] * ctm[0] + m[3] * ctm[2],
+  m[2] * ctm[1] + m[3] * ctm[3],
+  m[4] * ctm[0] + m[5] * ctm[2] + ctm[4],
+  m[4] * ctm[1] + m[5] * ctm[3] + ctm[5],
+];
+
+/**
+ * How many pixels per PDF point are needed to show the biggest picture on a page at its OWN resolution
+ * (1:1, nothing thrown away). Found by following the page's drawing commands: every picture is drawn into
+ * a unit square that the current transform stretches to its size on the page, so
+ * `picture pixels / size on page (points)` is the page scale at which that picture is not downsampled.
+ * Returns null for pages with no embedded picture.
+ */
+export const pictureScaleOfPage = async (
+  page: { getOperatorList: () => Promise<{ fnArray: number[]; argsArray: unknown[] }> },
+  OPS: Record<string, number>
+): Promise<number | null> => {
+  const { fnArray, argsArray } = await page.getOperatorList();
+  let ctm: Matrix = IDENTITY;
+  const stack: Matrix[] = [];
+  let bestArea = 0;
+  let bestScale: number | null = null;
+
+  for (let i = 0; i < fnArray.length; i++) {
+    const fn = fnArray[i];
+    const args = argsArray[i] as unknown[] | null;
+    if (fn === OPS.save) {
+      stack.push(ctm);
+    } else if (fn === OPS.restore) {
+      ctm = stack.pop() ?? IDENTITY;
+    } else if (fn === OPS.transform && args && args.length >= 6) {
+      ctm = multiply(args.slice(0, 6) as Matrix, ctm);
+    } else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      const m = args?.[0];
+      if (Array.isArray(m) && m.length >= 6) ctm = multiply(m.slice(0, 6) as Matrix, ctm);
+    } else if (fn === OPS.paintFormXObjectEnd) {
+      ctm = stack.pop() ?? IDENTITY;
+    } else if (
+      fn === OPS.paintImageXObject ||
+      fn === OPS.paintInlineImageXObject ||
+      fn === OPS.paintImageMaskXObject ||
+      fn === OPS.paintImageXObjectRepeat
+    ) {
+      let w = 0;
+      let h = 0;
+      if (args) {
+        if (typeof args[1] === 'number' && typeof args[2] === 'number') {
+          w = args[1];
+          h = args[2];
+        } else if (args[0] && typeof args[0] === 'object') {
+          const img = args[0] as { width?: number; height?: number };
+          w = img.width ?? 0;
+          h = img.height ?? 0;
+        }
+      }
+      const placedW = Math.hypot(ctm[0], ctm[1]);
+      const placedH = Math.hypot(ctm[2], ctm[3]);
+      if (w > 0 && h > 0 && placedW > 0.5 && placedH > 0.5 && placedW * placedH > bestArea) {
+        bestArea = placedW * placedH;
+        bestScale = Math.max(w / placedW, h / placedH);
+      }
+    }
+  }
+  return bestScale;
+};
 
 /**
  * Read EVERY page of a PDF (up to MAX_PDF_IMAGE_PAGES) as a picture, keeping page order.
  * Nothing from the PDF is compressed: each page keeps only a small lossless (PNG) placeholder, and
- * `loadFull` reads the page again from the ORIGINAL PDF at high resolution whenever it is shown large in
- * the editor or exported. Names are "<file> (page N)"; `group` is the file name, `page` is 1-based.
+ * `loadFull` reads the page again from the ORIGINAL PDF at the resolution of the picture inside it
+ * (so a 3000 px photo comes out 3000 px, not a small copy) whenever it is shown large or exported.
+ * Names are "<file> (page N)"; `group` is the file name, `page` is 1-based.
  */
 export const createAssetsFromPdf = async (
   file: File,
@@ -161,15 +237,15 @@ export const createAssetsFromPdf = async (
   if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
   }
+  const OPS = pdfjsLib.OPS as unknown as Record<string, number>;
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const totalPages = pdf.numPages;
   const count = Math.min(totalPages, MAX_PDF_IMAGE_PAGES);
   const assets: ImageAsset[] = [];
 
-  const renderPage = async (pageNumber: number, scaleFor: (w: number, h: number) => number) => {
+  const renderPage = async (pageNumber: number, scale: number) => {
     const page = await pdf.getPage(pageNumber);
-    const base = page.getViewport({ scale: 1 });
-    const viewport = page.getViewport({ scale: scaleFor(base.width, base.height) });
+    const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(viewport.width));
     canvas.height = Math.max(1, Math.round(viewport.height));
@@ -184,7 +260,25 @@ export const createAssetsFromPdf = async (
   };
 
   for (let pageNumber = 1; pageNumber <= count; pageNumber++) {
-    const small = await renderPage(pageNumber, (w, h) => PAGE_PLACEHOLDER_SIDE / Math.max(w, h));
+    const probe = await pdf.getPage(pageNumber);
+    const base = probe.getViewport({ scale: 1 });
+    let pictureScale: number | null = null;
+    try {
+      pictureScale = await pictureScaleOfPage(probe, OPS);
+    } catch {
+      pictureScale = null; // unusual page: fall back to the default resolution
+    }
+    probe.cleanup();
+
+    // Pixels per point to read this page at, limited only by what the browser can build.
+    const wanted = Math.min(MAX_PAGE_SCALE, Math.max(1, pictureScale ?? VECTOR_PAGE_SCALE));
+    const fullScale = Math.min(
+      wanted,
+      Math.sqrt(FULL_RENDER_MAX_AREA / (base.width * base.height)),
+      FULL_RENDER_MAX_SIDE / Math.max(base.width, base.height)
+    );
+
+    const small = await renderPage(pageNumber, PAGE_PLACEHOLDER_SIDE / Math.max(base.width, base.height));
     const thumb = small.toDataURL('image/png'); // lossless
     small.width = small.height = 0;
     const image = await loadImageFromUrl(thumb);
@@ -197,10 +291,8 @@ export const createAssetsFromPdf = async (
       thumb,
       group: file.name,
       page: pageNumber,
-      loadFull: () =>
-        renderPage(pageNumber, (w, h) =>
-          Math.min(FULL_RENDER_SCALE, Math.sqrt(FULL_RENDER_MAX_AREA / (w * h)), FULL_RENDER_MAX_SIDE / Math.max(w, h))
-        ),
+      native: { w: Math.round(base.width * fullScale), h: Math.round(base.height * fullScale) },
+      loadFull: () => renderPage(pageNumber, fullScale),
     });
 
     onProgress?.(pageNumber, count);

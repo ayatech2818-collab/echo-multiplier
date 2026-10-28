@@ -17,7 +17,15 @@ import {
 import { ExportBatchSize, OutputFormat } from '@/types';
 import { validateTemplate } from '@/lib/utils';
 import { analyzeExport, ExportCheck } from '@/lib/checks';
-import { autoNameValue, generateFilename, SHEET_SIZES, sheetGrid } from '@/lib/exportUtils';
+import {
+  autoNameValue,
+  effectiveScale,
+  generateFilename,
+  resolveScale,
+  Sharpness,
+  SHEET_SIZES,
+  sheetGrid,
+} from '@/lib/exportUtils';
 import { sanitizeFilename } from '@/lib/utils';
 import type { Studio } from '@/lib/useStudio';
 
@@ -93,6 +101,23 @@ export default function ExportStep({
       return `${generateFilename(filenameTemplate, row, auto || `document-${i + 1}`)}.${ext}`;
     });
   }, [activeRows, canvasFields, filenameTemplate, outputFormat, perSheet, ext]);
+
+  // Output size per document for the chosen sharpness (same maths the exporter uses).
+  const tplW = activeTemplate?.image.width ?? 0;
+  const tplH = activeTemplate?.image.height ?? 0;
+  const requestedScale = useMemo(
+    () => resolveScale(studio.sharpness, canvasFields, activeRows, studio.assetIndex),
+    [studio.sharpness, canvasFields, activeRows, studio.assetIndex]
+  );
+  const outScale = tplW > 0 ? effectiveScale(requestedScale, tplW, tplH) : 1;
+  const outW = Math.round(tplW * outScale);
+  const outH = Math.round(tplH * outScale);
+  const sharpOptions: { value: Sharpness; label: string; hint: string }[] = [
+    { value: 'auto', label: 'Automatic', hint: 'As sharp as your pictures need' },
+    { value: 1, label: 'Template size', hint: 'Smallest files' },
+    { value: 2, label: '2× sharper', hint: '' },
+    { value: 4, label: '4× sharper', hint: '' },
+  ];
 
   const insertColumn = (header: string) => {
     const input = inputRef.current;
@@ -217,6 +242,40 @@ export default function ExportStep({
               </button>
             ))}
           </div>
+        </div>
+
+        <div>
+          <h2 className="mb-1 text-sm font-semibold text-ink">Sharpness</h2>
+          <p className="mb-2 text-xs text-muted">
+            Photos are often bigger than the space they fill on your template. <strong className="font-medium text-ink">Automatic</strong>{' '}
+            makes each document large enough to keep every photo at its own full resolution, and text stays razor sharp.
+          </p>
+          <div role="group" aria-label="Sharpness" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {sharpOptions.map((o) => {
+              const active = studio.sharpness === o.value;
+              return (
+                <button
+                  key={String(o.value)}
+                  type="button"
+                  onClick={() => studio.setSharpness(o.value)}
+                  aria-pressed={active}
+                  className={`min-h-[56px] rounded-xl border px-2.5 py-2 text-left transition-colors ${
+                    active ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
+                  }`}
+                >
+                  <span className="block text-sm font-medium text-ink">{o.label}</span>
+                  {o.hint && <span className="block text-xs text-muted">{o.hint}</span>}
+                </button>
+              );
+            })}
+          </div>
+          {tplW > 0 && (
+            <p className="mt-2 text-xs text-muted">
+              Each document will be <strong className="font-medium text-ink">{outW.toLocaleString()} × {outH.toLocaleString()} px</strong>
+              {outScale > 1.01 ? ` (${outScale.toFixed(outScale % 1 === 0 ? 0 : 1)}× your template)` : ''}.
+              {outScale < requestedScale * 0.999 ? ' This is the largest your browser can make.' : ''}
+            </p>
+          )}
         </div>
 
         <div>

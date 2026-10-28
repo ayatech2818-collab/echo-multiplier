@@ -134,6 +134,8 @@ export interface ImageAsset {
   // high resolution; during export the result is held in `fullImage` for just the document being drawn.
   loadFull?: () => Promise<HTMLImageElement | HTMLCanvasElement>;
   fullImage?: HTMLImageElement | HTMLCanvasElement;
+  // Pixel size of the full-quality picture (what `loadFull` produces). Plain uploads use their own size.
+  native?: { w: number; h: number };
 }
 
 // 'max' = lossless PNG (nothing is compressed away). 'high' = JPEG at 100%.

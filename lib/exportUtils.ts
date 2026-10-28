@@ -34,10 +34,55 @@ const pdfLimitBytes = () => (isSmallDevice() ? 80 * MB : 220 * MB);
  */
 const canvasLimits = () => (isSmallDevice() ? { side: 8192, area: 16_000_000 } : { side: 16384, area: 200_000_000 });
 
-const fitRatio = (w: number, h: number): number => {
+/** Largest scale (output px per template px) this browser can build a page of w × h at. */
+const maxRatio = (w: number, h: number): number => {
   const l = canvasLimits();
-  return Math.min(1, l.side / Math.max(w, h), Math.sqrt(l.area / (w * h)));
+  return Math.min(l.side / Math.max(w, h), Math.sqrt(l.area / (w * h)));
 };
+
+/** The scale actually used for a page: what was asked for, unless the browser can't build it that large. */
+export const effectiveScale = (requested: number, w: number, h: number): number =>
+  Math.max(0.05, Math.min(requested, maxRatio(w, h)));
+
+/** 'auto' = as sharp as the pictures need; or a fixed multiple of the template's size (1, 2, 4…). */
+export type Sharpness = 'auto' | number;
+
+/** Auto sharpness never asks for more than this many output pixels per template pixel. */
+export const AUTO_SCALE_MAX = 8;
+
+/** Pixel size of an asset's full-quality picture. */
+const assetNative = (a: ImageAsset): { w: number; h: number } =>
+  a.native ?? { w: a.image.naturalWidth || a.image.width, h: a.image.naturalHeight || a.image.height };
+
+/**
+ * How many output pixels per template pixel it takes to show every picture at its own resolution:
+ * a 2000 px photo drawn into a 200 px box on the template needs 10×. (1 when nothing needs more.)
+ */
+export const neededScale = (fields: CanvasField[], rows: ExcelRow[], index: AssetIndex): number => {
+  let need = 1;
+  for (const field of fields) {
+    if (field.kind !== 'image') continue;
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const asset = findFieldAsset(field, row, index);
+      if (!asset || seen.has(asset.id)) continue;
+      seen.add(asset.id);
+      const n = assetNative(asset);
+      const layout = computeMediaLayout(field, n.w, n.h);
+      const shown = layout.crop ? layout.crop.width : n.w;
+      if (layout.dw > 0) need = Math.max(need, shown / layout.dw);
+    }
+  }
+  return need;
+};
+
+/** Turn the user's sharpness choice into a number for this run. */
+export const resolveScale = (
+  sharpness: Sharpness,
+  fields: CanvasField[],
+  rows: ExcelRow[],
+  assets: AssetIndex
+): number => (sharpness === 'auto' ? Math.min(AUTO_SCALE_MAX, neededScale(fields, rows, assets)) : Math.max(0.1, sharpness));
 
 export class ExportCancelledError extends Error {
   constructor() {
@@ -71,6 +116,8 @@ export interface ExportOptions {
   perSheet?: number;
   /** 'max' = lossless PNG, 'high' = JPEG at 100%. Default 'max'. */
   quality?: ExportQuality;
+  /** Output pixels per template pixel for the whole run (see resolveScale). Default 1. */
+  scale?: number;
   onProgress?: (current: number, total: number) => void;
   signal?: AbortSignal;
   stats?: ExportStats;
@@ -181,6 +228,7 @@ const addMediaNode = (
   field: CanvasField,
   rowData: ExcelRow,
   assets: AssetIndex,
+  pixelRatio: number,
   stats?: ExportStats
 ) => {
   const media = resolveMediaSource(field, rowData, assets);
@@ -198,7 +246,8 @@ const addMediaNode = (
   let crop = m.crop;
   if (field.kind === 'image') {
     const shownW = crop ? crop.width : srcW;
-    const factor = m.dw / shownW;
+    // Output pixels per source pixel; only shrink the picture when it is really being drawn smaller.
+    const factor = (m.dw * pixelRatio) / shownW;
     if (factor < 0.5) {
       // Picture is much bigger than its box: resample it smoothly to the size it is drawn at.
       image = resample(media.source, srcW, srcH, factor);
@@ -270,13 +319,14 @@ const renderRowOnLayer = (
   canvasFields: CanvasField[],
   rowData: ExcelRow,
   assets: AssetIndex,
+  pixelRatio: number,
   stats?: ExportStats
 ) => {
   layer.destroyChildren();
 
   canvasFields.forEach((field) => {
     if (!isTextField(field)) {
-      addMediaNode(layer, field, rowData, assets, stats);
+      addMediaNode(layer, field, rowData, assets, pixelRatio, stats);
       return;
     }
 
@@ -360,12 +410,13 @@ const withRow = async <T,>(
   job: ExportJob,
   index: AssetIndex,
   row: ExcelRow,
+  pixelRatio: number,
   stats: ExportStats | undefined,
   capture: () => T
 ): Promise<T> => {
   const loaded = await loadFullMedia(job, index, row);
   try {
-    renderRowOnLayer(target.layer, job.fields, row, index, stats);
+    renderRowOnLayer(target.layer, job.fields, row, index, pixelRatio, stats);
     return capture();
   } finally {
     loaded.forEach((a) => {
@@ -403,6 +454,7 @@ const renderPage = async (
   rows: ExcelRow[],
   perSheet: number,
   quality: ExportQuality,
+  requestedScale: number,
   stats?: ExportStats
 ): Promise<RenderedPage> => {
   const enc = encodingFor(quality);
@@ -410,9 +462,9 @@ const renderPage = async (
   const H = job.templateImage.height;
 
   if (perSheet <= 1) {
-    const pr = fitRatio(W, H);
-    if (pr < 1 && stats) stats.downscaled = true;
-    const url = await withRow(target, job, index, rows[0], stats, () =>
+    const pr = effectiveScale(requestedScale, W, H);
+    if (pr < requestedScale * 0.999 && stats) stats.downscaled = true;
+    const url = await withRow(target, job, index, rows[0], pr, stats, () =>
       target.stage.toDataURL({ pixelRatio: pr, mimeType: enc.mime, quality: 1 })
     );
     return { url, width: Math.round(W * pr), height: Math.round(H * pr) };
@@ -422,8 +474,8 @@ const renderPage = async (
   const pad = Math.min(W, H) * SHEET_MARGIN;
   const sheetW = cols * W + (cols + 1) * pad;
   const sheetH = gridRows * H + (gridRows + 1) * pad;
-  const pr = fitRatio(sheetW, sheetH);
-  if (pr < 1 && stats) stats.downscaled = true;
+  const pr = effectiveScale(requestedScale, sheetW, sheetH);
+  if (pr < requestedScale * 0.999 && stats) stats.downscaled = true;
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(sheetW * pr));
@@ -436,7 +488,7 @@ const renderPage = async (
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   for (let i = 0; i < rows.length; i++) {
-    const doc = await withRow(target, job, index, rows[i], stats, () => target.stage.toCanvas({ pixelRatio: pr }));
+    const doc = await withRow(target, job, index, rows[i], pr, stats, () => target.stage.toCanvas({ pixelRatio: pr }));
     const col = i % cols;
     const r = Math.floor(i / cols);
     const x = (pad + col * (W + pad)) * pr;
@@ -489,6 +541,7 @@ export const exportBatch = async (
   const { default: jsPDF } = await import('jspdf');
   const { onProgress, signal, stats } = options;
   const quality = options.quality ?? 'max';
+  const scale = options.scale ?? 1;
   const enc = encodingFor(quality);
   const perSheet = Math.max(1, options.perSheet ?? 1);
   const volumes: ExportVolume[] = [];
@@ -525,7 +578,7 @@ export const exportBatch = async (
       usedNames.set(filename, count + 1);
       if (count > 0) filename = `${filename} (${count + 1})`;
 
-      const page = await renderPage(target, job, index, group, perSheet, quality, stats);
+      const page = await renderPage(target, job, index, group, perSheet, quality, scale, stats);
       let blob: Blob;
       let fullFilename: string;
       if (format === 'image') {
@@ -594,6 +647,7 @@ export const exportSinglePDF = async (
   const { default: jsPDF } = await import('jspdf');
   const { onProgress, signal, stats } = options;
   const quality = options.quality ?? 'max';
+  const scale = options.scale ?? 1;
   const enc = encodingFor(quality);
   const perSheet = Math.max(1, options.perSheet ?? 1);
   const volumes: ExportVolume[] = [];
@@ -603,7 +657,7 @@ export const exportSinglePDF = async (
 
   try {
     const groups = chunk(rows, perSheet);
-    const first = await renderPage(target, job, index, groups[0], perSheet, quality, stats);
+    const first = await renderPage(target, job, index, groups[0], perSheet, quality, scale, stats);
     const pageW = first.width;
     const pageH = first.height;
     const orientation = pageW > pageH ? 'landscape' : 'portrait';
@@ -621,7 +675,7 @@ export const exportSinglePDF = async (
       throwIfAborted(signal);
       const firstRecord = done + 1;
 
-      const page = await renderPage(target, job, index, groups[g], perSheet, quality, stats);
+      const page = await renderPage(target, job, index, groups[g], perSheet, quality, scale, stats);
       const pageBytes = dataUrlBytes(page.url);
 
       if (volumeBytes + pageBytes > limit) {

@@ -37,6 +37,8 @@ import {
   ExportJob,
   ExportStats,
   exportBatch,
+  resolveScale,
+  Sharpness,
   exportSinglePDF,
 } from './exportUtils';
 import { generateId, sanitizeFilename } from './utils';
@@ -174,6 +176,7 @@ export function useStudio() {
   const [filenameTemplate, setFilenameTemplate] = useState('');
   const [exportAllTemplates, setExportAllTemplates] = useState(false);
   const [perSheet, setPerSheet] = useState(1);
+  const [sharpness, setSharpness] = useState<Sharpness>('auto');
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState({ current: 0, total: 0 });
   const abortRef = useRef<AbortController | null>(null);
@@ -779,7 +782,7 @@ export function useStudio() {
     const baseName = filenameTemplate.trim()
       ? sanitizeFilename(filenameTemplate.replace(/\{\{[^}]+\}\}/g, '')) || 'documents'
       : 'echo-multiplier-documents';
-    const options = {
+    const baseOptions = {
       perSheet,
       signal: controller.signal,
       stats,
@@ -791,6 +794,8 @@ export function useStudio() {
       let done = 0;
       for (const template of jobsTemplates) {
         const job: ExportJob = { templateImage: template.image, fields: canvasFields, assets };
+        // Output sharpness for this run, the same for every document so all pages come out the same size.
+        const options = { ...baseOptions, scale: resolveScale(sharpness, canvasFields, activeRows, assetIndex) };
         const label = many ? `-${sanitizeFilename(template.name).replace(/\s+/g, '-')}` : '';
 
         let volumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
@@ -850,6 +855,8 @@ export function useStudio() {
     notify,
     outputFormat,
     perSheet,
+    sharpness,
+    assetIndex,
     templates,
   ]);
 
@@ -920,6 +927,8 @@ export function useStudio() {
     setExportAllTemplates,
     perSheet,
     setPerSheet,
+    sharpness,
+    setSharpness,
     isExporting,
     exportProgress,
     runExport,

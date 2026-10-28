@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { formatValue, parseDateValue } from '../format';
-import { buildAssetIndex, findAsset, findAssetByRow, normalizeKey, ROW_INDEX_KEY } from '../assets';
+import { buildAssetIndex, findAsset, findAssetByRow, normalizeKey, pictureScaleOfPage, ROW_INDEX_KEY } from '../assets';
 import { parseLayout } from '../layoutIO';
 import { mergeDatasets } from '../fileParser';
-import { sheetGrid } from '../exportUtils';
+import { AUTO_SCALE_MAX, effectiveScale, neededScale, resolveScale, sheetGrid } from '../exportUtils';
 import { alignDelta } from '../fieldBounds';
 import { computeMediaLayout } from '../mediaField';
 import { analyzeExport, usedColumns } from '../checks';
@@ -264,5 +264,78 @@ describe('picture focus point', () => {
     const wide = (fy: number) => textField({ kind: 'image', fit: 'contain', width: 100, height: 100, focusY: fy, headerName: 'p' });
     expect(computeMediaLayout(wide(0), 200, 100).dy).toBe(0);
     expect(computeMediaLayout(wide(1), 200, 100).dy).toBe(50);
+  });
+});
+
+describe('output sharpness', () => {
+  const photo = (n: { w: number; h: number }): ImageAsset => ({ ...asset('p.png'), native: n });
+  const field = (over: Partial<CanvasField>): CanvasField =>
+    textField({ kind: 'image', imageSrc: 'p.png', width: 200, height: 200, headerName: 'p', ...over });
+
+  it('needs more than 1x when a photo is bigger than its box', () => {
+    const index = buildAssetIndex([photo({ w: 2000, h: 2000 })]);
+    expect(neededScale([field({ fit: 'contain' })], [{ Name: 'a' }], index)).toBeCloseTo(10, 5);
+  });
+
+  it('uses only the visible part of a cropped photo', () => {
+    // 3000x1000 photo, best fit in a 200x200 box: only the middle 1000x1000 shows, drawn 200px wide => 5x.
+    const index = buildAssetIndex([photo({ w: 3000, h: 1000 })]);
+    expect(neededScale([field({ fit: 'cover' })], [{ Name: 'a' }], index)).toBeCloseTo(5, 5);
+  });
+
+  it('stays at 1x when pictures are small or there are none', () => {
+    const index = buildAssetIndex([photo({ w: 100, h: 100 })]);
+    expect(neededScale([field({})], [{ Name: 'a' }], index)).toBe(1);
+    expect(neededScale([textField()], [{ Name: 'a' }], index)).toBe(1);
+  });
+
+  it('automatic is capped, fixed choices are honoured', () => {
+    const index = buildAssetIndex([photo({ w: 6000, h: 6000 })]);
+    const f = [field({ fit: 'contain' })];
+    expect(resolveScale('auto', f, [{ Name: 'a' }], index)).toBe(AUTO_SCALE_MAX);
+    expect(resolveScale(2, f, [{ Name: 'a' }], index)).toBe(2);
+    expect(resolveScale(1, f, [{ Name: 'a' }], index)).toBe(1);
+  });
+
+  it('never asks the browser for a page it cannot build', () => {
+    expect(effectiveScale(100, 1200, 800)).toBeLessThan(100);
+    expect(effectiveScale(2, 1200, 800)).toBe(2);
+  });
+});
+
+describe('picture resolution inside a PDF page', () => {
+  const OPS = { save: 1, restore: 2, transform: 3, paintImageXObject: 4, paintFormXObjectBegin: 5, paintFormXObjectEnd: 6 };
+  const page = (ops: [number, unknown[]][]) => ({
+    getOperatorList: async () => ({ fnArray: ops.map((o) => o[0]), argsArray: ops.map((o) => o[1]) }),
+  });
+
+  it('reports pixels per PDF point of the embedded picture', async () => {
+    // A 1000x1500 photo placed 200x300 points wide => 5 pixels per point.
+    const p = page([
+      [OPS.save, []],
+      [OPS.transform, [200, 0, 0, 300, 50, 50]],
+      [OPS.paintImageXObject, ['img_1', 1000, 1500]],
+      [OPS.restore, []],
+    ]);
+    expect(await pictureScaleOfPage(p, OPS)).toBeCloseTo(5, 5);
+  });
+
+  it('follows nested transforms and picks the biggest picture', async () => {
+    const p = page([
+      [OPS.save, []],
+      [OPS.transform, [2, 0, 0, 2, 0, 0]],
+      [OPS.transform, [50, 0, 0, 50, 0, 0]], // 100 x 100 points in total
+      [OPS.paintImageXObject, ['small', 100, 100]], // 1 px per point
+      [OPS.restore, []],
+      [OPS.save, []],
+      [OPS.transform, [400, 0, 0, 400, 0, 0]],
+      [OPS.paintImageXObject, ['big', 2400, 2400]], // 6 px per point, bigger on the page
+      [OPS.restore, []],
+    ]);
+    expect(await pictureScaleOfPage(p, OPS)).toBeCloseTo(6, 5);
+  });
+
+  it('returns null when the page has no picture', async () => {
+    expect(await pictureScaleOfPage(page([[OPS.save, []], [OPS.restore, []]]), OPS)).toBeNull();
   });
 });

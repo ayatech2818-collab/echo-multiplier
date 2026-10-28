@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   FileSpreadsheet,
@@ -14,6 +14,7 @@ import {
 import FileUpload from './FileUpload';
 import DataTableModal from './DataTableModal';
 import { listGroups } from '@/lib/assets';
+import type { ImageAsset } from '@/types';
 import type { Studio } from '@/lib/useStudio';
 
 function Card({
@@ -64,8 +65,76 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
   );
 }
 
+/** An element showing `picture` scaled down to fit its container (images are copied, canvases used as they are). */
+const fitElement = (picture: HTMLImageElement | HTMLCanvasElement): HTMLElement => {
+  const el = picture instanceof HTMLCanvasElement ? picture : (picture.cloneNode() as HTMLImageElement);
+  el.style.cssText = 'max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;';
+  return el;
+};
+
+/** Shows one picture at full quality (PDF pages are read again from the original PDF). */
+function PictureViewer({ asset, onClose }: { asset: ImageAsset; onClose: () => void }) {
+  const holder = useRef<HTMLDivElement>(null);
+  const [info, setInfo] = useState<string>('Reading the picture…');
+  const { loadFull, image: previewImage } = asset;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const picture = loadFull ? await loadFull() : previewImage;
+        if (cancelled || !holder.current) return;
+        const w = picture instanceof HTMLImageElement ? picture.naturalWidth || picture.width : picture.width;
+        const h = picture instanceof HTMLImageElement ? picture.naturalHeight || picture.height : picture.height;
+        holder.current.replaceChildren(fitElement(picture));
+        setInfo(`${w.toLocaleString()} × ${h.toLocaleString()} px`);
+      } catch {
+        if (!cancelled) setInfo('Could not open this picture.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadFull, previewImage]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-3 sm:p-6" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={asset.name}
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
+      >
+        <div className="flex items-center gap-3 border-b border-line p-3">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-ink">{asset.name}</p>
+            <p className="text-xs text-muted">{info}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-11 w-11 items-center justify-center rounded-full text-muted hover:bg-page hover:text-ink"
+            aria-label="Close"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div ref={holder} className="flex h-[70dvh] min-h-0 items-center justify-center overflow-auto bg-page p-2" />
+      </div>
+    </div>
+  );
+}
+
 export default function FilesStep({ studio, onContinue }: { studio: Studio; onContinue: () => void }) {
   const [showData, setShowData] = useState(false);
+  const [viewing, setViewing] = useState<ImageAsset | null>(null);
   const { templates, activeTemplate, datasets, assets, allRows, excelHeaders } = studio;
   const pdfGroups = listGroups(assets);
   const singleImages = assets.filter((a) => !a.group);
@@ -259,14 +328,22 @@ export default function FilesStep({ studio, onContinue }: { studio: Studio; onCo
                 <ul className="thin-scroll mt-3 grid max-h-[26rem] grid-cols-3 gap-2 overflow-y-auto pr-1 sm:grid-cols-4 lg:grid-cols-3">
                   {g.pages.map((a) => (
                     <li key={a.id} className="relative overflow-hidden rounded-lg border border-line bg-page">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={a.thumb}
-                        alt={a.name}
-                        loading="lazy"
-                        decoding="async"
-                        className="aspect-[3/4] w-full object-cover"
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setViewing(a)}
+                        className="block w-full"
+                        aria-label={`View ${a.name} at full quality`}
+                        title="Click to view at full quality"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={a.thumb}
+                          alt={a.name}
+                          loading="lazy"
+                          decoding="async"
+                          className="aspect-[3/4] w-full object-cover"
+                        />
+                      </button>
                       <span className="absolute left-1 top-1 rounded-md bg-black/65 px-1.5 text-[11px] font-semibold tabular-nums text-white">
                         {a.page}
                       </span>
@@ -282,8 +359,16 @@ export default function FilesStep({ studio, onContinue }: { studio: Studio; onCo
             <ul className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-3">
               {singleImages.map((a) => (
                 <li key={a.id} className="relative overflow-hidden rounded-xl border border-line bg-page">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={a.thumb} alt={a.name} className="aspect-square w-full object-contain" />
+                  <button
+                    type="button"
+                    onClick={() => setViewing(a)}
+                    className="block w-full"
+                    aria-label={`View ${a.name} at full quality`}
+                    title="Click to view at full quality"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={a.thumb} alt={a.name} className="aspect-square w-full object-contain" />
+                  </button>
                   <p className="truncate px-1.5 py-1 text-[11px] text-muted" title={a.name}>
                     {a.name}
                   </p>
@@ -328,6 +413,7 @@ export default function FilesStep({ studio, onContinue }: { studio: Studio; onCo
       </div>
 
       {showData && <DataTableModal studio={studio} onClose={() => setShowData(false)} />}
+      {viewing && <PictureViewer asset={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }
