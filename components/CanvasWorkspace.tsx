@@ -18,7 +18,16 @@ import { CanvasField, ExcelRow } from '@/types';
 import { layoutCombined } from '@/lib/combinedLayout';
 import { resolveFieldText, isTextField } from '@/lib/utils';
 import { effectiveFontSize, measureText } from '@/lib/measure';
-import { computeMediaLayout, fieldBox, resolveMediaSource } from '@/lib/mediaField';
+import {
+  borderDash,
+  computeMediaLayout,
+  cornerRadiusOf,
+  fieldBox,
+  isCircleField,
+  needsClip,
+  resolveMediaSource,
+  traceOutline,
+} from '@/lib/mediaField';
 import type { AssetIndex } from '@/lib/assets';
 import type { FieldSpec, Studio } from '@/lib/useStudio';
 import { FIELD_DND_TYPE, FieldDragPayload } from './HeaderChip';
@@ -148,7 +157,8 @@ const MediaFieldNode = memo(function MediaFieldNode({
   const srcW = src ? (src instanceof HTMLImageElement ? src.naturalWidth || src.width : src.width) : 0;
   const srcH = src ? (src instanceof HTMLImageElement ? src.naturalHeight || src.height : src.height) : 0;
   const m = computeMediaLayout(field, srcW, srcH);
-  const circle = field.kind === 'image' && field.shape === 'circle';
+  const circle = isCircleField(field);
+  const radius = cornerRadiusOf(field, m.w, m.h);
   const border = field.borderWidth && field.borderWidth > 0 ? field.borderWidth : 0;
   const placeholderLabel =
     media.label === ''
@@ -178,23 +188,15 @@ const MediaFieldNode = memo(function MediaFieldNode({
       <Rect
         width={m.w}
         height={m.h}
-        fill={noPicture ? 'rgba(148,163,184,0.18)' : field.kind === 'image' ? 'transparent' : '#ffffff'}
+        fill={noPicture ? 'rgba(148,163,184,0.18)' : field.kind === 'image' ? field.bgColor || 'transparent' : '#ffffff'}
         stroke={noPicture ? (media.missing ? '#dc2626' : '#94a3b8') : undefined}
         strokeWidth={noPicture ? 1.5 : 0}
         dash={noPicture ? [8, 6] : undefined}
-        cornerRadius={circle ? Math.min(m.w, m.h) / 2 : 0}
+        cornerRadius={radius}
       />
       {src && (
         <Group
-          clipFunc={
-            circle
-              ? (ctx) => {
-                  ctx.beginPath();
-                  ctx.ellipse(m.w / 2, m.h / 2, m.w / 2, m.h / 2, 0, 0, Math.PI * 2);
-                  ctx.closePath();
-                }
-              : undefined
-          }
+          clipFunc={needsClip(field, m.w, m.h) ? (ctx) => traceOutline(ctx, field, m.w, m.h) : undefined}
           listening={false}
         >
           <KonvaImage image={src} x={m.dx} y={m.dy} width={m.dw} height={m.dh} crop={m.crop} />
@@ -223,13 +225,22 @@ const MediaFieldNode = memo(function MediaFieldNode({
             radiusY={m.h / 2}
             stroke={field.borderColor || '#000000'}
             strokeWidth={border}
+            dash={borderDash(field)}
             listening={false}
           />
         ) : (
-          <Rect width={m.w} height={m.h} stroke={field.borderColor || '#000000'} strokeWidth={border} listening={false} />
+          <Rect
+            width={m.w}
+            height={m.h}
+            cornerRadius={radius}
+            stroke={field.borderColor || '#000000'}
+            strokeWidth={border}
+            dash={borderDash(field)}
+            listening={false}
+          />
         ))}
       {selected && !circle && (
-        <Rect width={m.w} height={m.h} stroke={SELECT_COLOR} strokeWidth={1} dash={[6, 4]} listening={false} />
+        <Rect width={m.w} height={m.h} cornerRadius={radius} stroke={SELECT_COLOR} strokeWidth={1} dash={[6, 4]} listening={false} />
       )}
     </Group>
   );

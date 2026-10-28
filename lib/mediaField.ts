@@ -70,6 +70,57 @@ export interface MediaLayout {
 
 export const DEFAULT_MEDIA_SIZE = 160;
 
+/** The few canvas calls needed to outline a field's shape (works with Konva's context and the DOM's). */
+export interface ShapePathContext {
+  beginPath(): void;
+  moveTo(x: number, y: number): void;
+  lineTo(x: number, y: number): void;
+  arcTo(x1: number, y1: number, x2: number, y2: number, radius: number): void;
+  ellipse(x: number, y: number, rx: number, ry: number, rotation: number, start: number, end: number): void;
+  closePath(): void;
+}
+
+export const isCircleField = (f: CanvasField): boolean => f.kind === 'image' && f.shape === 'circle';
+
+/** Corner radius (px) of an image field's outline, never more than half the shorter side. */
+export const cornerRadiusOf = (f: CanvasField, w: number, h: number): number => {
+  if (f.kind !== 'image') return 0;
+  const max = Math.min(w, h) / 2;
+  return isCircleField(f) ? max : Math.min(Math.max(0, f.cornerRadius ?? 0), max);
+};
+
+/** True when the picture must be clipped to a non-rectangular outline. */
+export const needsClip = (f: CanvasField, w: number, h: number): boolean =>
+  isCircleField(f) || cornerRadiusOf(f, w, h) > 0;
+
+/** Trace the field's outline (ellipse for 'circle', rounded rectangle otherwise) as the current path. */
+export const traceOutline = (ctx: ShapePathContext, f: CanvasField, w: number, h: number) => {
+  ctx.beginPath();
+  if (isCircleField(f)) {
+    ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+  } else {
+    const r = cornerRadiusOf(f, w, h);
+    ctx.moveTo(r, 0);
+    ctx.lineTo(w - r, 0);
+    ctx.arcTo(w, 0, w, r, r);
+    ctx.lineTo(w, h - r);
+    ctx.arcTo(w, h, w - r, h, r);
+    ctx.lineTo(r, h);
+    ctx.arcTo(0, h, 0, h - r, r);
+    ctx.lineTo(0, r);
+    ctx.arcTo(0, 0, r, 0, r);
+  }
+  ctx.closePath();
+};
+
+/** Konva dash pattern for the border style (undefined = solid). */
+export const borderDash = (f: CanvasField): number[] | undefined => {
+  const w = Math.max(1, f.borderWidth ?? 1);
+  if (f.borderStyle === 'dashed') return [w * 3, w * 2];
+  if (f.borderStyle === 'dotted') return [w, w * 1.6];
+  return undefined;
+};
+
 export const fieldBox = (field: CanvasField): { w: number; h: number } => ({
   w: Math.max(8, field.width ?? DEFAULT_MEDIA_SIZE),
   h: Math.max(8, field.height ?? DEFAULT_MEDIA_SIZE),
@@ -79,6 +130,14 @@ export const fieldBox = (field: CanvasField): { w: number; h: number } => ({
 export const computeMediaLayout = (field: CanvasField, srcW: number, srcH: number): MediaLayout => {
   const { w, h } = fieldBox(field);
   if (srcW <= 0 || srcH <= 0) return { w, h, dx: 0, dy: 0, dw: w, dh: h };
+
+  if (field.kind === 'image' && field.fit === 'fill') {
+    // Stretch to the box exactly (may distort the picture).
+    return { w, h, dx: 0, dy: 0, dw: w, dh: h };
+  }
+
+  const fx = clamp01(field.focusX ?? 0.5);
+  const fy = clamp01(field.focusY ?? 0.5);
 
   const wantsCover = field.kind === 'image' && (field.fit === 'cover' || (field.shape === 'circle' && field.fit !== 'contain'));
   if (wantsCover) {
@@ -92,12 +151,14 @@ export const computeMediaLayout = (field: CanvasField, srcW: number, srcH: numbe
       dy: 0,
       dw: w,
       dh: h,
-      crop: { x: (srcW - cw) / 2, y: (srcH - ch) / 2, width: cw, height: ch },
+      crop: { x: (srcW - cw) * fx, y: (srcH - ch) * fy, width: cw, height: ch },
     };
   }
 
   const s = Math.min(w / srcW, h / srcH);
   const dw = srcW * s;
   const dh = srcH * s;
-  return { w, h, dx: (w - dw) / 2, dy: (h - dh) / 2, dw, dh };
+  return { w, h, dx: (w - dw) * fx, dy: (h - dh) * fy, dw, dh };
 };
+
+const clamp01 = (n: number) => Math.min(1, Math.max(0, n));

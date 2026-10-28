@@ -5,6 +5,12 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  AlignHorizontalJustifyCenter,
+  AlignHorizontalJustifyEnd,
+  AlignHorizontalJustifyStart,
+  AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -15,6 +21,8 @@ import {
   Image as ImageIcon,
   Italic,
   Layers,
+  Maximize,
+  Sparkles,
   MousePointerClick,
   QrCode,
   Trash2,
@@ -431,6 +439,14 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
               <span className="block text-xs text-muted">Keeps long names inside the space you set.</span>
             </span>
           </label>
+          <button
+            type="button"
+            onClick={studio.bestFitSelected}
+            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+            title="Centre it and shrink long text so it always fits across the template"
+          >
+            <Sparkles size={16} /> Fit text across template
+          </button>
           {field.autoFit && (
             <Labeled label="Maximum width (px)">
               <NumField
@@ -609,6 +625,26 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
                 />
               </Labeled>
             </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+              {kind === 'image' && (
+                <button
+                  type="button"
+                  onClick={studio.bestFitSelected}
+                  className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+                  title="Change the box's height so it has the same shape as the picture"
+                >
+                  <Sparkles size={16} /> Match box to picture
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={studio.fitSelectedToTemplate}
+                className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+                title="Make it as large as fits on the template, centred"
+              >
+                <Maximize size={16} /> Fit to template
+              </button>
+            </div>
             {kind !== 'qr' && (
               <label className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-xl bg-page px-3 text-sm text-ink">
                 <input
@@ -624,17 +660,60 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
 
           {kind === 'image' && (
             <Section title="Look">
-              <Labeled label="Fit inside the box">
+              <Labeled
+                label="Picture placement in the box"
+                hint={
+                  (field.fit ?? 'contain') === 'cover'
+                    ? 'Best fit: fills the whole box without stretching; the overflow is cropped.'
+                    : (field.fit ?? 'contain') === 'fill'
+                    ? 'Stretch: fills the box exactly, but the picture can look squashed.'
+                    : 'Whole picture: nothing is cropped; empty space may show around it.'
+                }
+              >
                 <ToggleGroup
-                  label="Fit"
+                  label="Picture placement"
                   value={field.fit ?? 'contain'}
                   onChange={(fit) => update({ fit })}
                   options={[
-                    { value: 'contain', label: 'Whole picture' },
-                    { value: 'cover', label: 'Fill & crop' },
+                    { value: 'cover', label: 'Best fit' },
+                    { value: 'contain', label: 'Whole' },
+                    { value: 'fill', label: 'Stretch' },
                   ]}
                 />
               </Labeled>
+              {(field.fit ?? 'contain') !== 'fill' && (
+                <Labeled
+                  label="Focus"
+                  hint={
+                    (field.fit ?? 'contain') === 'cover'
+                      ? 'Choose which part of the picture stays visible (e.g. top keeps faces).'
+                      : 'Choose where the picture sits inside the box.'
+                  }
+                >
+                  <div role="group" aria-label="Focus" className="mx-auto grid w-32 grid-cols-3 gap-1.5">
+                    {[0, 0.5, 1].flatMap((fy) =>
+                      [0, 0.5, 1].map((fx) => {
+                        const active = (field.focusX ?? 0.5) === fx && (field.focusY ?? 0.5) === fy;
+                        const names = ['top', 'middle', 'bottom'];
+                        const cols = ['left', 'centre', 'right'];
+                        return (
+                          <button
+                            key={`${fx}-${fy}`}
+                            type="button"
+                            onClick={() => update({ focusX: fx, focusY: fy })}
+                            aria-pressed={active}
+                            aria-label={`${names[fy * 2]} ${cols[fx * 2]}`}
+                            title={`${names[fy * 2]} ${cols[fx * 2]}`}
+                            className={`h-9 rounded-lg border transition-colors ${
+                              active ? 'border-accent bg-accent' : 'border-line bg-page hover:border-accent/60'
+                            }`}
+                          />
+                        );
+                      })
+                    )}
+                  </div>
+                </Labeled>
+              )}
               <Labeled label="Shape">
                 <ToggleGroup
                   label="Shape"
@@ -646,6 +725,22 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
                   ]}
                 />
               </Labeled>
+              {(field.shape ?? 'rect') === 'rect' && (
+                <Labeled
+                  label={`Rounded corners ${Math.round(field.cornerRadius ?? 0)}px`}
+                  hint="0 = square corners. Drag right for softer edges."
+                >
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(1, Math.floor(Math.min(field.width ?? 160, field.height ?? 160) / 2))}
+                    value={Math.min(field.cornerRadius ?? 0, Math.floor(Math.min(field.width ?? 160, field.height ?? 160) / 2))}
+                    onChange={(e) => update({ cornerRadius: Number(e.target.value) })}
+                    className="h-11 w-full cursor-pointer accent-[rgb(var(--c-accent))]"
+                    aria-label="Rounded corners"
+                  />
+                </Labeled>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <Labeled label="Border (px)">
                   <NumField
@@ -666,6 +761,42 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
                   />
                 </Labeled>
               </div>
+              {(field.borderWidth ?? 0) > 0 && (
+                <Labeled label="Border style">
+                  <ToggleGroup
+                    label="Border style"
+                    value={field.borderStyle ?? 'solid'}
+                    onChange={(borderStyle) => update({ borderStyle })}
+                    options={[
+                      { value: 'solid', label: 'Solid' },
+                      { value: 'dashed', label: 'Dashed' },
+                      { value: 'dotted', label: 'Dotted' },
+                    ]}
+                  />
+                </Labeled>
+              )}
+              <Labeled label="Background colour" hint="Shows behind the picture (around it, or through transparent areas).">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={field.bgColor ?? '#ffffff'}
+                    onChange={(e) => update({ bgColor: e.target.value })}
+                    className="h-11 w-12 flex-shrink-0 cursor-pointer rounded-xl border border-line bg-surface"
+                    aria-label="Background colour"
+                  />
+                  {field.bgColor ? (
+                    <button
+                      type="button"
+                      onClick={() => update({ bgColor: undefined })}
+                      className="min-h-[44px] rounded-full border border-line px-4 text-sm font-medium text-ink hover:border-accent"
+                    >
+                      Remove
+                    </button>
+                  ) : (
+                    <span className="text-xs text-muted">None (transparent)</span>
+                  )}
+                </div>
+              </Labeled>
               <Labeled label={`Opacity ${Math.round((field.opacity ?? 1) * 100)}%`}>
                 <input
                   type="range"
@@ -680,6 +811,40 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
           )}
         </>
       )}
+
+      {/* ---------- Place on template ---------- */}
+      <Section title="Place on template">
+        <div className="grid grid-cols-3 gap-2">
+          {(
+            [
+              { t: 'left', label: 'Left edge', Icon: AlignHorizontalJustifyStart },
+              { t: 'hcenter', label: 'Centre horizontally', Icon: AlignHorizontalJustifyCenter },
+              { t: 'right', label: 'Right edge', Icon: AlignHorizontalJustifyEnd },
+              { t: 'top', label: 'Top edge', Icon: AlignVerticalJustifyStart },
+              { t: 'vcenter', label: 'Centre vertically', Icon: AlignVerticalJustifyCenter },
+              { t: 'bottom', label: 'Bottom edge', Icon: AlignVerticalJustifyEnd },
+            ] as const
+          ).map(({ t, label, Icon }) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => studio.alignSelected(t)}
+              aria-label={label}
+              title={label}
+              className="flex h-11 items-center justify-center rounded-xl border border-line text-ink transition-colors hover:border-accent hover:text-accent active:bg-accent-soft"
+            >
+              <Icon size={18} />
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => studio.alignSelected('center')}
+          className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-accent-soft px-3 text-sm font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
+        >
+          Centre on template
+        </button>
+      </Section>
 
       {/* ---------- Position ---------- */}
       <Section title="Position">

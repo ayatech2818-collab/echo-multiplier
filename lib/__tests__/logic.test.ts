@@ -4,6 +4,8 @@ import { buildAssetIndex, findAsset, findAssetByRow, normalizeKey, ROW_INDEX_KEY
 import { parseLayout } from '../layoutIO';
 import { mergeDatasets } from '../fileParser';
 import { sheetGrid } from '../exportUtils';
+import { alignDelta } from '../fieldBounds';
+import { computeMediaLayout } from '../mediaField';
 import { analyzeExport, usedColumns } from '../checks';
 import { resolveFieldText } from '../utils';
 import type { CanvasField, ImageAsset } from '@/types';
@@ -198,5 +200,69 @@ describe('pictures by PDF page order', () => {
     const rows = [0, 1, 2, 3, 4].map((i) => ({ Name: `n${i}`, [ROW_INDEX_KEY]: i }));
     const checks = analyzeExport([field], rows, [page(1), page(2), page(3)], '');
     expect(checks.some((c) => c.level === 'warning' && c.message.includes('2 rows have no page'))).toBe(true);
+  });
+});
+
+describe('placing on the template', () => {
+  const tw = 1000;
+  const th = 500;
+  const box = { left: 100, top: 40, width: 200, height: 100 };
+
+  it('centres horizontally and vertically', () => {
+    expect(alignDelta(box, 'hcenter', tw, th)).toEqual({ dx: 400 - 100, dy: 0 });
+    expect(alignDelta(box, 'vcenter', tw, th)).toEqual({ dx: 0, dy: 200 - 40 });
+  });
+
+  it('after moving, a centred box really is centred', () => {
+    const { dx } = alignDelta(box, 'hcenter', tw, th);
+    const { dy } = alignDelta(box, 'vcenter', tw, th);
+    expect(box.left + dx + box.width / 2).toBe(tw / 2);
+    expect(box.top + dy + box.height / 2).toBe(th / 2);
+  });
+
+  it('keeps a small margin from the edges', () => {
+    const margin = Math.round(Math.min(tw, th) * 0.03);
+    expect(box.left + alignDelta(box, 'left', tw, th).dx).toBe(margin);
+    expect(box.left + alignDelta(box, 'right', tw, th).dx + box.width).toBe(tw - margin);
+    expect(box.top + alignDelta(box, 'top', tw, th).dy).toBe(margin);
+    expect(box.top + alignDelta(box, 'bottom', tw, th).dy + box.height).toBe(th - margin);
+  });
+});
+
+describe('picture fit modes', () => {
+  const f = (fit: CanvasField['fit']): CanvasField =>
+    textField({ kind: 'image', fit, width: 200, height: 100, headerName: 'p' });
+
+  it('contain keeps the whole picture, centred, with bars', () => {
+    const m = computeMediaLayout(f('contain'), 100, 100);
+    expect([m.dw, m.dh, m.dx, m.dy]).toEqual([100, 100, 50, 0]);
+  });
+  it('cover fills the box by cropping', () => {
+    const m = computeMediaLayout(f('cover'), 100, 100);
+    expect([m.dw, m.dh]).toEqual([200, 100]);
+    expect(m.crop).toEqual({ x: 0, y: 25, width: 100, height: 50 });
+  });
+  it('fill stretches to the box exactly', () => {
+    const m = computeMediaLayout(f('fill'), 100, 100);
+    expect([m.dx, m.dy, m.dw, m.dh]).toEqual([0, 0, 200, 100]);
+    expect(m.crop).toBeUndefined();
+  });
+});
+
+describe('picture focus point', () => {
+  const tall = (fit: CanvasField['fit'], focusY: number): CanvasField =>
+    textField({ kind: 'image', fit, width: 100, height: 100, focusX: 0.5, focusY, headerName: 'p' });
+
+  it('best fit keeps the top of a tall photo when focus is top (faces stay in view)', () => {
+    // 100x200 photo in a 100x100 box: shows 100x100 of the source, anchored to the top.
+    expect(computeMediaLayout(tall('cover', 0), 100, 200).crop).toEqual({ x: 0, y: 0, width: 100, height: 100 });
+    expect(computeMediaLayout(tall('cover', 1), 100, 200).crop).toEqual({ x: 0, y: 100, width: 100, height: 100 });
+    expect(computeMediaLayout(tall('cover', 0.5), 100, 200).crop?.y).toBe(50);
+  });
+
+  it('whole picture can sit at the top or bottom of the box', () => {
+    const wide = (fy: number) => textField({ kind: 'image', fit: 'contain', width: 100, height: 100, focusY: fy, headerName: 'p' });
+    expect(computeMediaLayout(wide(0), 200, 100).dy).toBe(0);
+    expect(computeMediaLayout(wide(1), 200, 100).dy).toBe(50);
   });
 });

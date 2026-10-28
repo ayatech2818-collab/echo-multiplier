@@ -47,7 +47,8 @@ import {
   serializeLayout,
 } from './layoutIO';
 import { makeSampleAssets, makeSampleCertificate, sampleRows, SAMPLE_HEADERS } from './sample';
-import { DEFAULT_CODE_COLOR } from './mediaField';
+import { DEFAULT_CODE_COLOR, resolveMediaSource } from './mediaField';
+import { alignDelta, AlignTarget, fieldBounds } from './fieldBounds';
 
 /** What to place on the canvas. Used by tap-to-add and by drag-and-drop from the palette. */
 export type FieldSpec =
@@ -138,7 +139,9 @@ export const buildField = (
     imageColumn: spec.column,
     imageGroup: spec.group,
     codeText: spec.kind !== 'image' && !spec.column ? spec.text ?? '' : undefined,
-    fit: 'contain',
+    fit: spec.kind === 'image' && (spec.column || spec.group) ? 'cover' : 'contain',
+    focusX: 0.5,
+    focusY: 0.5,
     shape: 'rect',
     borderWidth: 0,
     borderColor: '#000000',
@@ -443,6 +446,82 @@ export function useStudio() {
     },
     [effectiveSelectedId, setFields]
   );
+
+  /** Move the selected field to an edge or the centre of the template. */
+  const alignSelected = useCallback(
+    (target: AlignTarget | 'center') => {
+      const field = histRef.current.present.find((f) => f.id === effectiveSelectedId);
+      const tpl = activeTemplate;
+      if (!field || !tpl) return;
+      const row = previewMode ? previewRow : null;
+      const b = fieldBounds(field, row);
+      const tw = tpl.image.width;
+      const th = tpl.image.height;
+      const steps: AlignTarget[] = target === 'center' ? ['hcenter', 'vcenter'] : [target];
+      let dx = 0;
+      let dy = 0;
+      steps.forEach((s) => {
+        const d = alignDelta(b, s, tw, th);
+        dx += d.dx;
+        dy += d.dy;
+      });
+      setFields(
+        (prev) => prev.map((f) => (f.id === field.id ? { ...f, x: Math.round((f.x + dx) * 10) / 10, y: Math.round((f.y + dy) * 10) / 10 } : f))
+      );
+    },
+    [activeTemplate, effectiveSelectedId, previewMode, previewRow, setFields]
+  );
+
+  /**
+   * "Best fit" for the selected field.
+   * Pictures: resize the box to the picture's own proportions (no empty bars, no cropping), keeping its centre.
+   * Text: shrink-to-fit across most of the template width, centred.
+   */
+  const bestFitSelected = useCallback(() => {
+    const field = histRef.current.present.find((f) => f.id === effectiveSelectedId);
+    const tpl = activeTemplate;
+    if (!field || !tpl) return;
+    const tw = tpl.image.width;
+
+    if (field.kind === 'image') {
+      const row = previewMode ? previewRow : null;
+      const media = resolveMediaSource(field, row, assetIndex);
+      const src = media.source;
+      const sw = src ? (src instanceof HTMLImageElement ? src.naturalWidth || src.width : src.width) : 0;
+      const sh = src ? (src instanceof HTMLImageElement ? src.naturalHeight || src.height : src.height) : 0;
+      if (!src || sw <= 0 || sh <= 0) {
+        notify('info', 'No picture to measure yet. Turn on Preview, or add images in Step 1.');
+        return;
+      }
+      const w = field.width ?? 160;
+      const h = field.height ?? 160;
+      const newH = Math.max(8, Math.round((w * sh) / sw));
+      setFields((prev) =>
+        prev.map((f) => (f.id === field.id ? { ...f, fit: 'contain', height: newH, y: Math.round(f.y + (h - newH) / 2) } : f))
+      );
+      return;
+    }
+
+    if (field.kind === 'qr' || field.kind === 'barcode' || field.segments) return;
+    setFields((prev) =>
+      prev.map((f) => (f.id === field.id ? { ...f, autoFit: true, width: Math.round(tw * 0.9), align: 'center', x: tw / 2 } : f))
+    );
+  }, [activeTemplate, assetIndex, effectiveSelectedId, notify, previewMode, previewRow, setFields]);
+
+  /** Scale the selected picture / code so it fills the template as far as its shape allows, centred. */
+  const fitSelectedToTemplate = useCallback(() => {
+    const field = histRef.current.present.find((f) => f.id === effectiveSelectedId);
+    const tpl = activeTemplate;
+    if (!field || !tpl || field.kind === undefined || field.kind === 'text') return;
+    const tw = tpl.image.width;
+    const th = tpl.image.height;
+    const ratio = (field.width ?? 160) / (field.height ?? 160);
+    const w = ratio >= tw / th ? tw : Math.round(th * ratio);
+    const h = ratio >= tw / th ? Math.round(tw / ratio) : th;
+    setFields((prev) =>
+      prev.map((f) => (f.id === field.id ? { ...f, width: w, height: h, x: Math.round((tw - w) / 2), y: Math.round((th - h) / 2) } : f))
+    );
+  }, [activeTemplate, effectiveSelectedId, setFields]);
 
   const addCombinedDef = useCallback((def: CombinedFieldDef) => setCombinedFields((prev) => [...prev, def]), []);
   const removeCombinedDef = useCallback(
@@ -771,6 +850,9 @@ export function useStudio() {
     deleteSelected,
     duplicateSelected,
     nudgeSelected,
+    alignSelected,
+    bestFitSelected,
+    fitSelectedToTemplate,
     undo,
     redo,
     canUndo: hist.past.length > 0,

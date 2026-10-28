@@ -61,10 +61,20 @@ export interface CanvasField {
   imageGroup?: string;
   // QR / barcode with fixed text (no column): the literal value to encode.
   codeText?: string;
-  fit?: 'contain' | 'cover';
+  // How the picture sits in its box: 'cover' = best fit (fills the box, crops overflow, no distortion),
+  // 'contain' = whole picture visible (may leave bars), 'fill' = stretched to the box.
+  fit?: 'contain' | 'cover' | 'fill';
+  // Which part of the picture stays in view / where it sits in the box: 0 = left/top, 0.5 = centre, 1 = right/bottom.
+  focusX?: number;
+  focusY?: number;
   shape?: 'rect' | 'circle';
   borderWidth?: number;
   borderColor?: string;
+  borderStyle?: 'solid' | 'dashed' | 'dotted';
+  // Rounded corners in template px (image fields with shape 'rect'; 'circle' is always fully round).
+  cornerRadius?: number;
+  // Colour shown behind the picture (visible around 'whole picture' fits and transparent PNGs).
+  bgColor?: string;
   opacity?: number; // 0..1
   lockRatio?: boolean;
 

@@ -5,7 +5,15 @@ import { sanitizeFilename, resolveFieldText, isTextField } from './utils';
 import { layoutCombined, resolveSegmentText } from './combinedLayout';
 import { effectiveFontSize, measureText } from './measure';
 import { buildAssetIndex, AssetIndex } from './assets';
-import { computeMediaLayout, resolveMediaSource } from './mediaField';
+import {
+  borderDash,
+  computeMediaLayout,
+  cornerRadiusOf,
+  isCircleField,
+  needsClip,
+  resolveMediaSource,
+  traceOutline,
+} from './mediaField';
 
 /**
  * Maximum in-memory size for a single ZIP archive before auto-splitting (150 MB).
@@ -131,23 +139,21 @@ const addMediaNode = (
   const srcW = media.source instanceof HTMLImageElement ? media.source.naturalWidth || media.source.width : media.source.width;
   const srcH = media.source instanceof HTMLImageElement ? media.source.naturalHeight || media.source.height : media.source.height;
   const m = computeMediaLayout(field, srcW, srcH);
-  const circle = field.kind === 'image' && field.shape === 'circle';
+  const circle = isCircleField(field);
+  const radius = cornerRadiusOf(field, m.w, m.h);
 
   const group = new Konva.Group({
     x: field.x,
     y: field.y,
     opacity: field.opacity ?? 1,
-    clipFunc: circle
-      ? (ctx) => {
-          ctx.beginPath();
-          ctx.ellipse(m.w / 2, m.h / 2, m.w / 2, m.h / 2, 0, 0, Math.PI * 2);
-          ctx.closePath();
-        }
-      : undefined,
+    clipFunc: needsClip(field, m.w, m.h) ? (ctx) => traceOutline(ctx, field, m.w, m.h) : undefined,
   });
   if (field.kind !== 'image') {
     // Codes always sit on a white plate so they stay scannable on any background.
     group.add(new Konva.Rect({ x: 0, y: 0, width: m.w, height: m.h, fill: '#ffffff' }));
+  } else if (field.bgColor) {
+    // Background colour behind the picture (clipped to the same outline).
+    group.add(new Konva.Rect({ x: 0, y: 0, width: m.w, height: m.h, fill: field.bgColor }));
   }
   group.add(
     new Konva.Image({
@@ -172,6 +178,7 @@ const addMediaNode = (
             radiusY: m.h / 2,
             stroke,
             strokeWidth: field.borderWidth,
+            dash: borderDash(field),
             opacity: field.opacity ?? 1,
           })
         : new Konva.Rect({
@@ -179,8 +186,10 @@ const addMediaNode = (
             y: field.y,
             width: m.w,
             height: m.h,
+            cornerRadius: radius,
             stroke,
             strokeWidth: field.borderWidth,
+            dash: borderDash(field),
             opacity: field.opacity ?? 1,
           })
     );
