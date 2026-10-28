@@ -1,6 +1,6 @@
 import { saveAs } from 'file-saver';
 import Konva from 'konva';
-import { ExcelRow, CanvasField, OutputFormat, ImageAsset } from '@/types';
+import { ExcelRow, CanvasField, OutputFormat, ImageAsset, ExportQuality } from '@/types';
 import { sanitizeFilename, resolveFieldText, isTextField } from './utils';
 import { layoutCombined, resolveSegmentText } from './combinedLayout';
 import { effectiveFontSize, measureText } from './measure';
@@ -9,28 +9,35 @@ import {
   borderDash,
   computeMediaLayout,
   cornerRadiusOf,
+  findFieldAsset,
   isCircleField,
   needsClip,
   resolveMediaSource,
   traceOutline,
 } from './mediaField';
 
-/**
- * Maximum in-memory size for a single ZIP archive before auto-splitting (150 MB).
- * Based on the byte size of all blobs accumulated so far.
- */
-const ZIP_SIZE_LIMIT_BYTES = 150 * 1024 * 1024;
+const MB = 1024 * 1024;
+
+const isSmallDevice = () =>
+  typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
 /**
- * Maximum number of pages per single-PDF volume before auto-splitting.
- * Keep this conservative to avoid "Invalid string length" crashes in jsPDF.
+ * A ZIP / PDF is only split into several files when ONE file would get too big for the browser's
+ * memory. Normal runs (hundreds of documents) come out as a single download.
  */
-const PDF_PAGE_LIMIT = 200;
+const zipLimitBytes = () => (isSmallDevice() ? 150 * MB : 400 * MB);
+const pdfLimitBytes = () => (isSmallDevice() ? 80 * MB : 220 * MB);
 
-/** Longest side (px) of an exported page. Keeps huge templates from exhausting canvas memory. */
-const MAX_EXPORT_SIDE = 4096;
-/** Lower cap on phones/tablets, where canvas memory is tighter. */
-const MAX_EXPORT_SIDE_MOBILE = 3000;
+/**
+ * Exports are made at the template's own pixel size (1 template pixel = 1 output pixel). They are only
+ * scaled down when the browser itself could not create a canvas that large.
+ */
+const canvasLimits = () => (isSmallDevice() ? { side: 8192, area: 16_000_000 } : { side: 16384, area: 200_000_000 });
+
+const fitRatio = (w: number, h: number): number => {
+  const l = canvasLimits();
+  return Math.min(1, l.side / Math.max(w, h), Math.sqrt(l.area / (w * h)));
+};
 
 export class ExportCancelledError extends Error {
   constructor() {
@@ -55,11 +62,15 @@ export interface ExportJob {
 /** Mutable counters filled while exporting so the UI can report problems afterwards. */
 export interface ExportStats {
   missingMedia: number;
+  /** True if the page was too large for this browser and had to be scaled down. */
+  downscaled: boolean;
 }
 
 export interface ExportOptions {
   /** How many documents share one page/sheet (1 = one per page). */
   perSheet?: number;
+  /** 'max' = lossless PNG, 'high' = JPEG at 100%. Default 'max'. */
+  quality?: ExportQuality;
   onProgress?: (current: number, total: number) => void;
   signal?: AbortSignal;
   stats?: ExportStats;
@@ -72,8 +83,10 @@ const throwIfAborted = (signal?: AbortSignal) => {
 /** Let the browser paint / handle input between rows so the progress bar keeps moving. */
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-const isSmallDevice = () =>
-  typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+const encodingFor = (quality: ExportQuality = 'max') =>
+  quality === 'max'
+    ? ({ mime: 'image/png', ext: 'png', pdfType: 'PNG' } as const)
+    : ({ mime: 'image/jpeg', ext: 'jpg', pdfType: 'JPEG' } as const);
 
 /**
  * When no filename template is given, name each file after a field the user placed on the template.
@@ -124,6 +137,45 @@ const createExportStage = (templateImage: HTMLImageElement) => {
   return { stage, layer };
 };
 
+type Drawable = HTMLImageElement | HTMLCanvasElement;
+
+/**
+ * Shrink a large picture to the size it will be drawn at, in gentle halving steps. A single big jump
+ * (e.g. a 3000 px photo into a 130 px badge) gives jagged, noisy edges; stepping keeps it sharp.
+ */
+const resample = (src: Drawable, srcW: number, srcH: number, factor: number): HTMLCanvasElement => {
+  const tw = Math.max(1, Math.round(srcW * factor));
+  const th = Math.max(1, Math.round(srcH * factor));
+  let current: Drawable = src;
+  let cw = srcW;
+  let ch = srcH;
+  while (cw / 2 >= tw && ch / 2 >= th) {
+    const nw = Math.ceil(cw / 2);
+    const nh = Math.ceil(ch / 2);
+    const step = document.createElement('canvas');
+    step.width = nw;
+    step.height = nh;
+    const sctx = step.getContext('2d');
+    if (!sctx) break;
+    sctx.imageSmoothingEnabled = true;
+    sctx.imageSmoothingQuality = 'high';
+    sctx.drawImage(current, 0, 0, nw, nh);
+    current = step;
+    cw = nw;
+    ch = nh;
+  }
+  const out = document.createElement('canvas');
+  out.width = tw;
+  out.height = th;
+  const octx = out.getContext('2d');
+  if (octx) {
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    octx.drawImage(current, 0, 0, tw, th);
+  }
+  return out;
+};
+
 const addMediaNode = (
   layer: Konva.Layer,
   field: CanvasField,
@@ -142,6 +194,22 @@ const addMediaNode = (
   const circle = isCircleField(field);
   const radius = cornerRadiusOf(field, m.w, m.h);
 
+  let image: Drawable = media.source;
+  let crop = m.crop;
+  if (field.kind === 'image') {
+    const shownW = crop ? crop.width : srcW;
+    const factor = m.dw / shownW;
+    if (factor < 0.5) {
+      // Picture is much bigger than its box: resample it smoothly to the size it is drawn at.
+      image = resample(media.source, srcW, srcH, factor);
+      if (crop) {
+        const sx = image.width / srcW;
+        const sy = image.height / srcH;
+        crop = { x: crop.x * sx, y: crop.y * sy, width: crop.width * sx, height: crop.height * sy };
+      }
+    }
+  }
+
   const group = new Konva.Group({
     x: field.x,
     y: field.y,
@@ -157,12 +225,12 @@ const addMediaNode = (
   }
   group.add(
     new Konva.Image({
-      image: media.source,
+      image,
       x: m.dx,
       y: m.dy,
       width: m.dw,
       height: m.dh,
-      crop: m.crop,
+      crop,
     })
   );
   layer.add(group);
@@ -261,43 +329,49 @@ const renderRowOnLayer = (
 interface RenderTarget {
   stage: Konva.Stage;
   layer: Konva.Layer;
-  pixelRatio: number;
 }
 
-const createTarget = (job: ExportJob): RenderTarget => {
-  const { stage, layer } = createExportStage(job.templateImage);
-  const cap = isSmallDevice() ? MAX_EXPORT_SIDE_MOBILE : MAX_EXPORT_SIDE;
-  const longest = Math.max(job.templateImage.width, job.templateImage.height);
-  return { stage, layer, pixelRatio: Math.min(1, cap / longest) };
+const createTarget = (job: ExportJob): RenderTarget => createExportStage(job.templateImage);
+
+const destroyTarget = (target: RenderTarget) => {
+  target.stage.destroy();
 };
 
-const renderToDataURL = (
+/**
+ * Pictures that came from a PDF are shown small in the editor. For the real output each one is re-read
+ * from the ORIGINAL PDF at high resolution, just for the moment its document is drawn.
+ */
+const loadFullMedia = async (job: ExportJob, index: AssetIndex, row: ExcelRow): Promise<ImageAsset[]> => {
+  const loaded: ImageAsset[] = [];
+  for (const field of job.fields) {
+    if (field.kind !== 'image') continue;
+    const asset = findFieldAsset(field, row, index);
+    if (asset?.loadFull && !asset.fullImage) {
+      asset.fullImage = await asset.loadFull();
+      loaded.push(asset);
+    }
+  }
+  return loaded;
+};
+
+/** Draw one row with its full-resolution pictures, hand the result to `capture`, then free the memory. */
+const withRow = async <T,>(
   target: RenderTarget,
   job: ExportJob,
   index: AssetIndex,
   row: ExcelRow,
   stats: ExportStats | undefined,
-  mimeType: 'image/jpeg' | 'image/png'
-): string => {
-  renderRowOnLayer(target.layer, job.fields, row, index, stats);
-  return target.stage.toDataURL({ pixelRatio: target.pixelRatio, mimeType, quality: 0.92 });
-};
-
-const dataUrlToBlob = async (dataURL: string): Promise<Blob> => {
-  const response = await fetch(dataURL);
-  return response.blob();
-};
-
-const loadDataUrl = (dataURL: string): Promise<HTMLImageElement> =>
-  new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to render page'));
-    img.src = dataURL;
-  });
-
-const destroyTarget = (target: RenderTarget) => {
-  target.stage.destroy();
+  capture: () => T
+): Promise<T> => {
+  const loaded = await loadFullMedia(job, index, row);
+  try {
+    renderRowOnLayer(target.layer, job.fields, row, index, stats);
+    return capture();
+  } finally {
+    loaded.forEach((a) => {
+      a.fullImage = undefined;
+    });
+  }
 };
 
 /** Choices offered for "documents per page". */
@@ -315,37 +389,54 @@ export const sheetGrid = (n: number, docW: number, docH: number): { cols: number
 
 const SHEET_MARGIN = 0.03; // of the shorter document side; also the gap between documents
 
-/** Render one sheet (1..perSheet documents) to a JPEG data URL. */
-const renderSheetToDataURL = (
+interface RenderedPage {
+  url: string;
+  width: number;
+  height: number;
+}
+
+/** Render one page (a single document, or a sheet of several) at full quality. */
+const renderPage = async (
   target: RenderTarget,
   job: ExportJob,
   index: AssetIndex,
   rows: ExcelRow[],
   perSheet: number,
+  quality: ExportQuality,
   stats?: ExportStats
-): string => {
-  if (perSheet <= 1) return renderToDataURL(target, job, index, rows[0], stats, 'image/jpeg');
-
+): Promise<RenderedPage> => {
+  const enc = encodingFor(quality);
   const W = job.templateImage.width;
   const H = job.templateImage.height;
+
+  if (perSheet <= 1) {
+    const pr = fitRatio(W, H);
+    if (pr < 1 && stats) stats.downscaled = true;
+    const url = await withRow(target, job, index, rows[0], stats, () =>
+      target.stage.toDataURL({ pixelRatio: pr, mimeType: enc.mime, quality: 1 })
+    );
+    return { url, width: Math.round(W * pr), height: Math.round(H * pr) };
+  }
+
   const { cols, rows: gridRows } = sheetGrid(perSheet, W, H);
   const pad = Math.min(W, H) * SHEET_MARGIN;
   const sheetW = cols * W + (cols + 1) * pad;
   const sheetH = gridRows * H + (gridRows + 1) * pad;
-  const cap = isSmallDevice() ? MAX_EXPORT_SIDE_MOBILE : MAX_EXPORT_SIDE;
-  const pr = Math.min(1, cap / Math.max(sheetW, sheetH));
+  const pr = fitRatio(sheetW, sheetH);
+  if (pr < 1 && stats) stats.downscaled = true;
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(sheetW * pr));
   canvas.height = Math.max(1, Math.round(sheetH * pr));
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas is not available on this device');
+  if (!ctx) throw new Error('This browser could not create a page that large');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  rows.forEach((row, i) => {
-    renderRowOnLayer(target.layer, job.fields, row, index, stats);
-    const doc = target.stage.toCanvas({ pixelRatio: pr });
+  for (let i = 0; i < rows.length; i++) {
+    const doc = await withRow(target, job, index, rows[i], stats, () => target.stage.toCanvas({ pixelRatio: pr }));
     const col = i % cols;
     const r = Math.floor(i / cols);
     const x = (pad + col * (W + pad)) * pr;
@@ -355,13 +446,22 @@ const renderSheetToDataURL = (
     ctx.strokeStyle = '#cbd5e1';
     ctx.lineWidth = 1;
     ctx.strokeRect(x - 0.5, y - 0.5, W * pr + 1, H * pr + 1);
-  });
+  }
 
-  const url = canvas.toDataURL('image/jpeg', 0.92);
+  const url = canvas.toDataURL(enc.mime, 1);
+  const out = { url, width: canvas.width, height: canvas.height };
   // Free the big bitmap right away (matters on phones).
   canvas.width = canvas.height = 0;
-  return url;
+  return out;
 };
+
+const dataUrlToBlob = async (dataURL: string): Promise<Blob> => {
+  const response = await fetch(dataURL);
+  return response.blob();
+};
+
+/** Approximate size in bytes of a base64 data URL's content. */
+const dataUrlBytes = (url: string) => Math.round(url.length * 0.75);
 
 const chunk = <T,>(items: T[], size: number): T[][] => {
   const out: T[][] = [];
@@ -370,10 +470,9 @@ const chunk = <T,>(items: T[], size: number): T[][] => {
 };
 
 /**
- * Export a set of rows as one or more ZIP archives (one JPG or PDF per document, or per sheet when
- * several documents share a page). When the in-memory size of the current ZIP exceeds
- * ZIP_SIZE_LIMIT_BYTES the archive is sealed and a new one started. `startIndex`/`totalRecords`
- * position this batch within the whole run for naming and progress.
+ * Export a set of rows as one or more ZIP archives (one image or PDF per document, or per sheet when
+ * several documents share a page). A new ZIP is only started when the current one would pass the
+ * browser's memory limit. `startIndex`/`totalRecords` position this batch within the whole run.
  */
 export const exportBatch = async (
   job: ExportJob,
@@ -389,10 +488,13 @@ export const exportBatch = async (
   const { default: JSZip } = await import('jszip');
   const { default: jsPDF } = await import('jspdf');
   const { onProgress, signal, stats } = options;
+  const quality = options.quality ?? 'max';
+  const enc = encodingFor(quality);
   const perSheet = Math.max(1, options.perSheet ?? 1);
   const volumes: ExportVolume[] = [];
   const index = buildAssetIndex(job.assets);
   const target = createTarget(job);
+  const limit = zipLimitBytes();
 
   let zip = new JSZip();
   let usedNames = new Map<string, number>();
@@ -423,28 +525,27 @@ export const exportBatch = async (
       usedNames.set(filename, count + 1);
       if (count > 0) filename = `${filename} (${count + 1})`;
 
-      const dataURL = renderSheetToDataURL(target, job, index, group, perSheet, stats);
+      const page = await renderPage(target, job, index, group, perSheet, quality, stats);
       let blob: Blob;
       let fullFilename: string;
       if (format === 'image') {
-        blob = await dataUrlToBlob(dataURL);
-        fullFilename = `${filename}.jpg`;
+        blob = await dataUrlToBlob(page.url);
+        fullFilename = `${filename}.${enc.ext}`;
       } else {
-        const img = await loadDataUrl(dataURL);
         const pdf = new jsPDF({
-          orientation: img.width > img.height ? 'landscape' : 'portrait',
+          orientation: page.width > page.height ? 'landscape' : 'portrait',
           unit: 'px',
-          format: [img.width, img.height],
+          format: [page.width, page.height],
         });
-        pdf.addImage(dataURL, 'JPEG', 0, 0, img.width, img.height);
+        pdf.addImage(page.url, enc.pdfType, 0, 0, page.width, page.height, undefined, 'FAST');
         blob = pdf.output('blob');
         fullFilename = `${filename}.pdf`;
       }
 
-      // Seal the current zip and start a new volume if this file would bust the size limit.
-      if (currentZipBytes > 0 && currentZipBytes + blob.size > ZIP_SIZE_LIMIT_BYTES) {
+      // Start a new ZIP only if this file would push the current one past the memory limit.
+      if (currentZipBytes > 0 && currentZipBytes + blob.size > limit) {
         volumes.push({
-          blob: await zip.generateAsync({ type: 'blob' }),
+          blob: await zip.generateAsync({ type: 'blob', compression: 'STORE' }),
           startRecord: volumeStart,
           endRecord: firstRecord - 1,
         });
@@ -465,7 +566,8 @@ export const exportBatch = async (
 
     if (currentZipBytes > 0) {
       volumes.push({
-        blob: await zip.generateAsync({ type: 'blob' }),
+        // STORE = no extra compression: the pictures are already compressed, and this keeps every pixel as exported.
+        blob: await zip.generateAsync({ type: 'blob', compression: 'STORE' }),
         startRecord: volumeStart,
         endRecord: startIndex + rows.length,
       });
@@ -479,8 +581,7 @@ export const exportBatch = async (
 
 /**
  * Export all rows as one or more PDFs (one page per document, or per sheet when several share a page).
- * When the page count hits PDF_PAGE_LIMIT the current PDF is sealed and a new volume started,
- * preventing "Invalid string length" crashes.
+ * A new PDF is only started when the current one would get too big for the browser to build.
  */
 export const exportSinglePDF = async (
   job: ExportJob,
@@ -492,21 +593,24 @@ export const exportSinglePDF = async (
   if (rows.length === 0) throw new Error('No data to export');
   const { default: jsPDF } = await import('jspdf');
   const { onProgress, signal, stats } = options;
+  const quality = options.quality ?? 'max';
+  const enc = encodingFor(quality);
   const perSheet = Math.max(1, options.perSheet ?? 1);
   const volumes: ExportVolume[] = [];
   const index = buildAssetIndex(job.assets);
   const target = createTarget(job);
+  const limit = pdfLimitBytes();
 
   try {
     const groups = chunk(rows, perSheet);
-    const firstURL = renderSheetToDataURL(target, job, index, groups[0], perSheet, stats);
-    const first = await loadDataUrl(firstURL);
+    const first = await renderPage(target, job, index, groups[0], perSheet, quality, stats);
     const pageW = first.width;
     const pageH = first.height;
     const orientation = pageW > pageH ? 'landscape' : 'portrait';
 
     let pdf = new jsPDF({ orientation, unit: 'px', format: [pageW, pageH] });
-    pdf.addImage(firstURL, 'JPEG', 0, 0, pageW, pageH);
+    pdf.addImage(first.url, enc.pdfType, 0, 0, pageW, pageH, undefined, 'FAST');
+    let volumeBytes = dataUrlBytes(first.url);
     let done = groups[0].length;
     onProgress?.(progressOffset + done, progressTotal);
 
@@ -517,16 +621,20 @@ export const exportSinglePDF = async (
       throwIfAborted(signal);
       const firstRecord = done + 1;
 
-      if (pagesInCurrentVolume >= PDF_PAGE_LIMIT) {
+      const page = await renderPage(target, job, index, groups[g], perSheet, quality, stats);
+      const pageBytes = dataUrlBytes(page.url);
+
+      if (volumeBytes + pageBytes > limit) {
         volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: done });
         pdf = new jsPDF({ orientation, unit: 'px', format: [pageW, pageH] });
         pagesInCurrentVolume = 0;
+        volumeBytes = 0;
         volumeStart = firstRecord;
       }
 
-      const dataURL = renderSheetToDataURL(target, job, index, groups[g], perSheet, stats);
       if (pagesInCurrentVolume > 0) pdf.addPage([pageW, pageH]);
-      pdf.addImage(dataURL, 'JPEG', 0, 0, pageW, pageH);
+      pdf.addImage(page.url, enc.pdfType, 0, 0, pageW, pageH, undefined, 'FAST');
+      volumeBytes += pageBytes;
       pagesInCurrentVolume++;
       done += groups[g].length;
 

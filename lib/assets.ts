@@ -1,9 +1,7 @@
 import { ExcelRow, ImageAsset } from '@/types';
 import { generateId } from './utils';
 
-/** Longest side an uploaded library image keeps; larger photos are downscaled to save memory. */
-export const MAX_ASSET_SIDE = 2000;
-const THUMB_SIDE = 96;
+const THUMB_SIDE = 240;
 
 /** Lowercase, trimmed, with any folder path removed: "C:\\pics\\Ana.PNG" -> "ana.png". */
 export const normalizeKey = (value: string | number): string => {
@@ -98,14 +96,6 @@ const drawScaled = (img: HTMLImageElement, maxSide: number, mime: string): strin
   return canvas.toDataURL(mime);
 };
 
-const readDataUrl = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
-
 const loadImageFromUrl = (url: string): Promise<HTMLImageElement> =>
   new Promise((resolve, reject) => {
     const img = new Image();
@@ -114,13 +104,18 @@ const loadImageFromUrl = (url: string): Promise<HTMLImageElement> =>
     img.src = url;
   });
 
-/** Turn an uploaded image file into a library asset (downscaling oversized photos, making a thumbnail). */
+/**
+ * Turn an uploaded image file into a library asset. The picture is used exactly as uploaded: the original
+ * file bytes are shown and exported, nothing is resized or re-encoded. (Only the small thumbnail is scaled.)
+ */
 export const createAssetFromFile = async (file: File): Promise<ImageAsset> => {
-  const url = await readDataUrl(file);
-  let image = await loadImageFromUrl(url);
-  if (Math.max(image.width, image.height) > MAX_ASSET_SIDE) {
-    const keepsAlpha = /png|webp|gif|svg/i.test(file.type);
-    image = await loadImageFromUrl(drawScaled(image, MAX_ASSET_SIDE, keepsAlpha ? 'image/png' : 'image/jpeg'));
+  const url = URL.createObjectURL(file);
+  let image: HTMLImageElement;
+  try {
+    image = await loadImageFromUrl(url);
+  } catch (e) {
+    URL.revokeObjectURL(url);
+    throw e;
   }
   return {
     id: generateId(),
@@ -143,18 +138,20 @@ export const createAssetFromImage = (name: string, image: HTMLImageElement): Ima
 /** Most pages read from one PDF of pictures (each page is one picture). */
 export const MAX_PDF_IMAGE_PAGES = 2000;
 
-/** Longer side (px) for a page picture; shrinks for big PDFs so hundreds of pages stay light in memory. */
-const pageSideFor = (pageCount: number): number => (pageCount > 300 ? 640 : pageCount > 80 ? 800 : 1200);
+/** Longer side (px) of the small placeholder shown while a page is being read at full quality. */
+const PAGE_PLACEHOLDER_SIDE = 360;
 
-const canvasToBlob = (canvas: HTMLCanvasElement, quality: number): Promise<Blob> =>
-  new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode page'))), 'image/jpeg', quality)
-  );
+/** Pages are read from the PDF at this many pixels per PDF point (4 = 288 dpi) when shown large or exported. */
+const FULL_RENDER_SCALE = 4;
+/** Biggest bitmap we ask the browser for when reading a page (pixels). */
+const FULL_RENDER_MAX_AREA = 120_000_000;
+const FULL_RENDER_MAX_SIDE = 16384;
 
 /**
  * Read EVERY page of a PDF (up to MAX_PDF_IMAGE_PAGES) as a picture, keeping page order.
- * Pages are encoded as small JPEGs and held as object URLs so even hundreds of pages stay light.
- * Names are "<file> (page N)"; `group` is the file name, `page` is 1-based.
+ * Nothing from the PDF is compressed: each page keeps only a small lossless (PNG) placeholder, and
+ * `loadFull` reads the page again from the ORIGINAL PDF at high resolution whenever it is shown large in
+ * the editor or exported. Names are "<file> (page N)"; `group` is the file name, `page` is 1-based.
  */
 export const createAssetsFromPdf = async (
   file: File,
@@ -167,15 +164,12 @@ export const createAssetsFromPdf = async (
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const totalPages = pdf.numPages;
   const count = Math.min(totalPages, MAX_PDF_IMAGE_PAGES);
-  const maxSide = pageSideFor(count);
   const assets: ImageAsset[] = [];
 
-  for (let pageNumber = 1; pageNumber <= count; pageNumber++) {
+  const renderPage = async (pageNumber: number, scaleFor: (w: number, h: number) => number) => {
     const page = await pdf.getPage(pageNumber);
     const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(3, maxSide / Math.max(base.width, base.height));
-    const viewport = page.getViewport({ scale });
-
+    const viewport = page.getViewport({ scale: scaleFor(base.width, base.height) });
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(viewport.width));
     canvas.height = Math.max(1, Math.round(viewport.height));
@@ -183,26 +177,32 @@ export const createAssetsFromPdf = async (
     if (!context) throw new Error('Canvas is not available');
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, canvas.width, canvas.height);
-
     const renderContext: Parameters<typeof page.render>[0] = { canvas, canvasContext: context, viewport };
     await page.render(renderContext).promise;
+    page.cleanup();
+    return canvas;
+  };
 
-    const url = URL.createObjectURL(await canvasToBlob(canvas, 0.86));
-    const image = await loadImageFromUrl(url);
+  for (let pageNumber = 1; pageNumber <= count; pageNumber++) {
+    const small = await renderPage(pageNumber, (w, h) => PAGE_PLACEHOLDER_SIDE / Math.max(w, h));
+    const thumb = small.toDataURL('image/png'); // lossless
+    small.width = small.height = 0;
+    const image = await loadImageFromUrl(thumb);
     const name = totalPages > 1 ? `${file.name} (page ${pageNumber})` : file.name;
     assets.push({
       id: generateId(),
       name,
       key: normalizeKey(name),
       image,
-      thumb: drawScaled(image, THUMB_SIDE, 'image/jpeg'),
+      thumb,
       group: file.name,
       page: pageNumber,
+      loadFull: () =>
+        renderPage(pageNumber, (w, h) =>
+          Math.min(FULL_RENDER_SCALE, Math.sqrt(FULL_RENDER_MAX_AREA / (w * h)), FULL_RENDER_MAX_SIDE / Math.max(w, h))
+        ),
     });
 
-    // Release the page's memory and let the UI breathe / update progress.
-    page.cleanup();
-    canvas.width = canvas.height = 0;
     onProgress?.(pageNumber, count);
     if (pageNumber % 5 === 0) await new Promise((r) => setTimeout(r, 0));
   }

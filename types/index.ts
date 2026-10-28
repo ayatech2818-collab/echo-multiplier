@@ -130,7 +130,14 @@ export interface ImageAsset {
   thumb: string; // small data URL for the library UI
   group?: string; // set for pictures that came from a PDF: the PDF's file name
   page?: number; // 1-based page number within that PDF
+  // PDF pages: `image` is only an on-screen preview. `loadFull` re-reads the page from the original PDF at
+  // high resolution; during export the result is held in `fullImage` for just the document being drawn.
+  loadFull?: () => Promise<HTMLImageElement | HTMLCanvasElement>;
+  fullImage?: HTMLImageElement | HTMLCanvasElement;
 }
+
+// 'max' = lossless PNG (nothing is compressed away). 'high' = JPEG at 100%.
+export type ExportQuality = 'max' | 'high';
 
 export type NoticeKind = 'error' | 'warning' | 'success' | 'info';
 export interface Notice {

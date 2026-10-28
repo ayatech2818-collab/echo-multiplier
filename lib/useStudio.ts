@@ -47,7 +47,7 @@ import {
   serializeLayout,
 } from './layoutIO';
 import { makeSampleAssets, makeSampleCertificate, sampleRows, SAMPLE_HEADERS } from './sample';
-import { DEFAULT_CODE_COLOR, resolveMediaSource } from './mediaField';
+import { DEFAULT_CODE_COLOR, findFieldAsset, resolveMediaSource } from './mediaField';
 import { alignDelta, AlignTarget, fieldBounds } from './fieldBounds';
 
 /** What to place on the canvas. Used by tap-to-add and by drag-and-drop from the palette. */
@@ -170,7 +170,7 @@ export function useStudio() {
 
   // ---- export settings ----
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('image');
-  const [exportBatchSize, setExportBatchSize] = useState<ExportBatchSize>(100);
+  const [exportBatchSize, setExportBatchSize] = useState<ExportBatchSize>('all');
   const [filenameTemplate, setFilenameTemplate] = useState('');
   const [exportAllTemplates, setExportAllTemplates] = useState(false);
   const [perSheet, setPerSheet] = useState(1);
@@ -262,9 +262,47 @@ export function useStudio() {
     () => templates.find((t) => t.id === activeTemplateId) ?? templates[0] ?? null,
     [templates, activeTemplateId]
   );
-  const assetIndex = useMemo(() => buildAssetIndex(assets), [assets]);
+  // Bumped whenever a PDF page finishes loading at full quality, so the editor redraws it.
+  const [pageTick, setPageTick] = useState(0);
+  // A new object each time so memoized canvas nodes notice that a picture changed.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const assetIndex = useMemo(() => ({ ...buildAssetIndex(assets) }), [assets, pageTick]);
   const safePreviewIndex = Math.min(previewIndex, Math.max(0, activeRows.length - 1));
   const previewRow = activeRows[safePreviewIndex] ?? null;
+  const showingRow = previewMode ? previewRow : null;
+
+  // ---------------- full-quality PDF pages in the editor ----------------
+  // PDF pages are kept as tiny placeholders. The pages currently on screen are read from the original PDF at
+  // full quality; the ones no longer shown are released again.
+  useEffect(() => {
+    if (isExporting) return; // the exporter loads its own pages
+    let cancelled = false;
+    const index = buildAssetIndex(assets);
+    const wanted = new Set<ImageAsset>();
+    canvasFields.forEach((f) => {
+      const asset = findFieldAsset(f, showingRow, index);
+      if (asset?.loadFull) wanted.add(asset);
+    });
+    assets.forEach((a) => {
+      if (a.fullImage && !wanted.has(a)) a.fullImage = undefined;
+    });
+    wanted.forEach((asset) => {
+      if (asset.fullImage || !asset.loadFull) return;
+      asset
+        .loadFull()
+        .then((full) => {
+          if (cancelled) return;
+          asset.fullImage = full;
+          setPageTick((t) => t + 1);
+        })
+        .catch(() => {
+          /* keep showing the placeholder */
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [assets, canvasFields, showingRow, isExporting]);
 
   // ---------------- uploads ----------------
   const addTemplates = useCallback(
@@ -732,7 +770,7 @@ export function useStudio() {
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const stats: ExportStats = { missingMedia: 0 };
+    const stats: ExportStats = { missingMedia: 0, downscaled: false };
     const total = activeRows.length * jobsTemplates.length;
     setIsExporting(true);
     setExportProgress({ current: 0, total });
@@ -783,6 +821,9 @@ export function useStudio() {
 
       downloads.forEach(({ blob, name }) => (name.endsWith('.zip') ? downloadZip(blob, name) : saveAs(blob, name)));
       notify('success', `Done! ${total} document${total === 1 ? '' : 's'} exported in ${downloads.length} file${downloads.length === 1 ? '' : 's'}.`);
+      if (stats.downscaled) {
+        notify('warning', "Some pages were larger than this browser can create, so they were scaled down slightly. Try a computer, or use fewer documents per page.");
+      }
       if (stats.missingMedia > 0) {
         notify('warning', `${stats.missingMedia} picture${stats.missingMedia === 1 ? ' was' : 's were'} left blank because no matching image was found.`);
       }

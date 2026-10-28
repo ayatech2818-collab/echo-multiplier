@@ -1,4 +1,4 @@
-import { CanvasField, ExcelRow } from '@/types';
+import { CanvasField, ExcelRow, ImageAsset } from '@/types';
 import { AssetIndex, cellText, findAsset, findAssetByRow } from './assets';
 import { getCodeCanvas } from './codes';
 import { ROW_INDEX_KEY } from './assets';
@@ -14,6 +14,19 @@ export interface MediaSource {
 
 export const DEFAULT_CODE_COLOR = '#000000';
 
+/** The picture to draw for an asset: the full-resolution page while exporting, else the preview. */
+const pictureOf = (asset: ImageAsset | null): HTMLImageElement | HTMLCanvasElement | null =>
+  asset ? asset.fullImage ?? asset.image : null;
+
+/** The library picture an image field uses for a row (null for text/codes or when nothing matches). */
+export const findFieldAsset = (field: CanvasField, row: ExcelRow | null, assets: AssetIndex): ImageAsset | null => {
+  if (field.kind !== 'image') return null;
+  if (field.imageSrc) return findAsset(assets, field.imageSrc);
+  if (field.imageGroup) return findAssetByRow(assets, field.imageGroup, row);
+  if (field.imageColumn && row) return findAsset(assets, cellText(row, field.imageColumn));
+  return null;
+};
+
 /**
  * Resolve what an image / QR / barcode field should draw for a row.
  * `row === null` is the editor skeleton (no preview data): per-row fields show a placeholder.
@@ -28,19 +41,19 @@ export const resolveMediaSource = (
   if (kind === 'image') {
     if (field.imageSrc) {
       const asset = findAsset(assets, field.imageSrc);
-      return { source: asset?.image ?? null, label: field.imageSrc, missing: !asset };
+      return { source: pictureOf(asset), label: field.imageSrc, missing: !asset };
     }
     if (field.imageGroup) {
       // By position: the row's number picks the PDF page. With no preview row, show page 1 as a sample.
       const asset = findAssetByRow(assets, field.imageGroup, row);
       const at = row ? Number(row[ROW_INDEX_KEY]) + 1 : 1;
-      return { source: asset?.image ?? null, label: `${field.imageGroup} · page ${at}`, missing: !!row && !asset };
+      return { source: pictureOf(asset), label: `${field.imageGroup} · page ${at}`, missing: !!row && !asset };
     }
     const column = field.imageColumn ?? '';
     if (!row) return { source: null, label: column, missing: false };
     const value = cellText(row, column);
     const asset = findAsset(assets, value);
-    return { source: asset?.image ?? null, label: value || column, missing: !asset };
+    return { source: pictureOf(asset), label: value || column, missing: !asset };
   }
 
   if (kind === 'qr' || kind === 'barcode') {

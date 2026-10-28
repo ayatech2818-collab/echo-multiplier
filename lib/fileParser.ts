@@ -110,7 +110,7 @@ export const loadPDFPages = async (file: File): Promise<{ pages: LoadedPage[]; t
     const totalPages = pdf.numPages;
     const count = Math.min(totalPages, MAX_PDF_PAGES);
     // Lower resolution when many pages are rendered, to keep memory in check.
-    const scale = count > 3 ? 1.5 : 2;
+    const scale = count <= 3 ? 4 : count <= 10 ? 3 : 2;
 
     const pages: LoadedPage[] = [];
     for (let pageNumber = 1; pageNumber <= count; pageNumber++) {

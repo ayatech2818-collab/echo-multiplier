@@ -22,7 +22,7 @@ import { sanitizeFilename } from '@/lib/utils';
 import type { Studio } from '@/lib/useStudio';
 
 const FORMATS: { value: OutputFormat; label: string; hint: string; Icon: React.ElementType }[] = [
-  { value: 'image', label: 'JPG images', hint: 'One picture per document, zipped', Icon: FileImage },
+  { value: 'image', label: 'PNG images', hint: 'Lossless, one per document', Icon: FileImage },
   { value: 'pdf', label: 'PDF files', hint: 'One PDF per document, zipped', Icon: FileText },
   { value: 'single-pdf', label: 'One big PDF', hint: 'All documents in one PDF', Icon: FileStack },
 ];
@@ -85,7 +85,7 @@ export default function ExportStep({
   const filesPerTemplate = outputFormat === 'single-pdf' ? Math.max(1, Math.ceil(sheets / 200)) : Math.max(1, Math.ceil(sheets / sheetsPerZip));
   const totalFiles = filesPerTemplate * templateCount;
 
-  const ext = outputFormat === 'image' ? 'jpg' : 'pdf';
+  const ext = outputFormat === 'image' ? 'png' : 'pdf';
   const exampleNames = useMemo(() => {
     if (outputFormat === 'single-pdf' || perSheet > 1) return [];
     return activeRows.slice(0, 3).map((row, i) => {
@@ -194,7 +194,10 @@ export default function ExportStep({
         )}
 
         <div>
-          <h2 className="mb-1.5 text-sm font-semibold text-ink">File type</h2>
+          <h2 className="mb-1 text-sm font-semibold text-ink">File type</h2>
+          <p className="mb-2 text-xs text-muted">
+            Full quality: documents come out at your template&apos;s own pixel size, lossless, with nothing compressed.
+          </p>
           <div role="group" aria-label="File type" className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {FORMATS.map(({ value, label, hint, Icon }) => (
               <button
