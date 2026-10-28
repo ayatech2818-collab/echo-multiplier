@@ -24,6 +24,7 @@ import { CanvasField, CombinedSegment, FieldFormat, FontStyle, FormatType } from
 import { FONT_FAMILIES } from '@/lib/fonts';
 import { isTextField } from '@/lib/utils';
 import { DATE_PATTERNS } from '@/lib/formatOptions';
+import { listGroups } from '@/lib/assets';
 import type { Studio } from '@/lib/useStudio';
 
 const composeFontStyle = (bold: boolean, italic: boolean): FontStyle =>
@@ -523,6 +524,24 @@ export default function PropertiesPanel({ studio, selectedSegmentId, onSelectSeg
                   {studio.assets.map((a) => (
                     <option key={a.id} value={a.key}>
                       {a.name}
+                    </option>
+                  ))}
+                </select>
+              </Labeled>
+            )}
+            {field.imageGroup !== undefined && (
+              <Labeled label="PDF with the pictures" hint="Row 1 uses page 1, row 2 uses page 2, and so on.">
+                <select
+                  value={field.imageGroup}
+                  onChange={(e) => update({ imageGroup: e.target.value, headerName: e.target.value })}
+                  className={selectClass}
+                >
+                  {!listGroups(studio.assets).some((g) => g.name === field.imageGroup) && (
+                    <option value={field.imageGroup}>{field.imageGroup} (not uploaded)</option>
+                  )}
+                  {listGroups(studio.assets).map((g) => (
+                    <option key={g.name} value={g.name}>
+                      {g.name} ({g.pages.length} pages)
                     </option>
                   ))}
                 </select>

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import FileUpload from './FileUpload';
 import DataTableModal from './DataTableModal';
+import { listGroups } from '@/lib/assets';
 import type { Studio } from '@/lib/useStudio';
 
 function Card({
@@ -66,6 +67,8 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
 export default function FilesStep({ studio, onContinue }: { studio: Studio; onContinue: () => void }) {
   const [showData, setShowData] = useState(false);
   const { templates, activeTemplate, datasets, assets, allRows, excelHeaders } = studio;
+  const pdfGroups = listGroups(assets);
+  const singleImages = assets.filter((a) => !a.group);
   const ready = templates.length > 0;
 
   return (
@@ -225,32 +228,86 @@ export default function FilesStep({ studio, onContinue }: { studio: Studio; onCo
             compact={assets.length > 0}
             onFilesSelect={studio.addImages}
           />
-          {assets.length > 0 ? (
-            <>
-              <ul className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-3">
-                {assets.map((a) => (
-                  <li key={a.id} className="relative overflow-hidden rounded-xl border border-line bg-page">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={a.thumb} alt={a.name} className="aspect-square w-full object-contain" />
-                    <p className="truncate px-1.5 py-1 text-[11px] text-muted" title={a.name}>
-                      {a.name}
+
+          {/* Pictures that came from a PDF: every page, in page order */}
+          {pdfGroups.map((g) => {
+            const match = allRows.length === 0 ? null : g.pages.length === allRows.length;
+            return (
+              <div key={g.name} className="mt-3 rounded-xl border border-line p-3">
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-ink" title={g.name}>
+                      {g.name}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => studio.removeImage(a.id)}
-                      className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-surface/90 text-muted shadow-sm hover:text-danger"
-                      aria-label={`Remove ${a.name}`}
-                    >
-                      <X size={14} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-3 text-xs text-muted">
-                Tip: to give each document its own picture, put the image file names in a data column (like{' '}
-                <code className="rounded bg-page px-1 text-ink">ana.png</code>).
-              </p>
-            </>
+                    <p className="text-xs text-muted">
+                      {g.pages.length} picture{g.pages.length === 1 ? '' : 's'}, in page order
+                    </p>
+                  </div>
+                  <RemoveButton label={`Remove all pages of ${g.name}`} onClick={() => studio.removeImageGroup(g.name)} />
+                </div>
+                {match !== null && (
+                  <p
+                    className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs ${
+                      match ? 'bg-success-soft text-success' : 'bg-warn-soft text-warn'
+                    }`}
+                  >
+                    {match
+                      ? `Matches your ${allRows.length} data rows: row 1 gets page 1, row 2 gets page 2…`
+                      : `${g.pages.length} pictures but ${allRows.length} data rows. Rows are matched by position, so check the order and count.`}
+                  </p>
+                )}
+                <ul className="thin-scroll mt-3 grid max-h-[26rem] grid-cols-3 gap-2 overflow-y-auto pr-1 sm:grid-cols-4 lg:grid-cols-3">
+                  {g.pages.map((a) => (
+                    <li key={a.id} className="relative overflow-hidden rounded-lg border border-line bg-page">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={a.thumb}
+                        alt={a.name}
+                        loading="lazy"
+                        decoding="async"
+                        className="aspect-[3/4] w-full object-cover"
+                      />
+                      <span className="absolute left-1 top-1 rounded-md bg-black/65 px-1.5 text-[11px] font-semibold tabular-nums text-white">
+                        {a.page}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+
+          {/* Single pictures */}
+          {singleImages.length > 0 && (
+            <ul className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-3">
+              {singleImages.map((a) => (
+                <li key={a.id} className="relative overflow-hidden rounded-xl border border-line bg-page">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={a.thumb} alt={a.name} className="aspect-square w-full object-contain" />
+                  <p className="truncate px-1.5 py-1 text-[11px] text-muted" title={a.name}>
+                    {a.name}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => studio.removeImage(a.id)}
+                    className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-surface/90 text-muted shadow-sm hover:text-danger"
+                    aria-label={`Remove ${a.name}`}
+                  >
+                    <X size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {assets.length > 0 ? (
+            <p className="mt-3 text-xs text-muted">
+              {pdfGroups.length > 0
+                ? 'Tip: in the design step choose Image → “One picture per row, in PDF page order”. '
+                : ''}
+              You can also match pictures by file name from a data column (like{' '}
+              <code className="rounded bg-page px-1 text-ink">ana.png</code>).
+            </p>
           ) : (
             <p className="mt-3 text-xs text-muted">Skip this if your documents only need text.</p>
           )}

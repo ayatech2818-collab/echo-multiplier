@@ -56,6 +56,9 @@ export interface CanvasField {
   imageSrc?: string;
   // Per-row image / qr / barcode: the dataset column that supplies the value.
   imageColumn?: string;
+  // Per-row image taken BY POSITION from a PDF's pages: row 1 -> page 1, row 2 -> page 2, ...
+  // (the value is the PDF's file name).
+  imageGroup?: string;
   // QR / barcode with fixed text (no column): the literal value to encode.
   codeText?: string;
   fit?: 'contain' | 'cover';
@@ -115,6 +118,8 @@ export interface ImageAsset {
   key: string; // lowercase file name, used to match dataset values
   image: HTMLImageElement;
   thumb: string; // small data URL for the library UI
+  group?: string; // set for pictures that came from a PDF: the PDF's file name
+  page?: number; // 1-based page number within that PDF
 }
 
 export type NoticeKind = 'error' | 'warning' | 'success' | 'info';

@@ -1,6 +1,7 @@
 import { CanvasField, ExcelRow } from '@/types';
-import { AssetIndex, cellText, findAsset } from './assets';
+import { AssetIndex, cellText, findAsset, findAssetByRow } from './assets';
 import { getCodeCanvas } from './codes';
+import { ROW_INDEX_KEY } from './assets';
 
 /** Drawable source for a media field plus why it may be missing. */
 export interface MediaSource {
@@ -28,6 +29,12 @@ export const resolveMediaSource = (
     if (field.imageSrc) {
       const asset = findAsset(assets, field.imageSrc);
       return { source: asset?.image ?? null, label: field.imageSrc, missing: !asset };
+    }
+    if (field.imageGroup) {
+      // By position: the row's number picks the PDF page. With no preview row, show page 1 as a sample.
+      const asset = findAssetByRow(assets, field.imageGroup, row);
+      const at = row ? Number(row[ROW_INDEX_KEY]) + 1 : 1;
+      return { source: asset?.image ?? null, label: `${field.imageGroup} · page ${at}`, missing: !!row && !asset };
     }
     const column = field.imageColumn ?? '';
     if (!row) return { source: null, label: column, missing: false };

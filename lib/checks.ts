@@ -1,5 +1,5 @@
 import { CanvasField, ExcelRow, ImageAsset } from '@/types';
-import { buildAssetIndex, cellText, findAsset } from './assets';
+import { buildAssetIndex, cellText, findAsset, findAssetByRow } from './assets';
 import { autoNameValue, generateFilename } from './exportUtils';
 import { sanitizeFilename } from './utils';
 
@@ -71,6 +71,29 @@ export const analyzeExport = (
           message: `${unmatched} image${unmatched === 1 ? '' : 's'} in "${f.imageColumn}" ${
             unmatched === 1 ? "isn't" : "aren't"
           } in your uploaded images, so ${unmatched === 1 ? 'that document' : 'those documents'} will have no picture.`,
+        });
+      }
+    });
+
+  // Pictures taken by position from a PDF: every row needs its own page.
+  fields
+    .filter((f) => f.kind === 'image' && f.imageGroup)
+    .forEach((f) => {
+      const pages = index.groups.get(f.imageGroup!)?.length ?? 0;
+      if (pages === 0) {
+        checks.push({
+          level: 'error',
+          message: `The PDF "${f.imageGroup}" used for pictures isn't uploaded. Add it in Step 1.`,
+        });
+        return;
+      }
+      const without = rows.filter((row) => !findAssetByRow(index, f.imageGroup!, row)).length;
+      if (without > 0) {
+        checks.push({
+          level: 'warning',
+          message: `"${f.imageGroup}" has ${pages} page${pages === 1 ? '' : 's'} but ${without} row${
+            without === 1 ? ' has' : 's have'
+          } no page at that position, so ${without === 1 ? 'that document' : 'those documents'} will have no picture.`,
         });
       }
     });

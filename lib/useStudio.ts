@@ -21,7 +21,15 @@ import {
   parseExcel,
   validateUpload,
 } from './fileParser';
-import { buildAssetIndex, createAssetFromFile, createAssetFromImage, findAsset } from './assets';
+import {
+  buildAssetIndex,
+  createAssetFromFile,
+  createAssetsFromPdf,
+  findAsset,
+  releaseAsset,
+  ROW_INDEX_KEY,
+  MAX_PDF_IMAGE_PAGES,
+} from './assets';
 import {
   defaultMediaBox,
   downloadZip,
@@ -46,7 +54,7 @@ export type FieldSpec =
   | { type: 'column'; header: string }
   | { type: 'static'; text: string }
   | { type: 'combined'; def: CombinedFieldDef }
-  | { type: 'media'; kind: 'image' | 'qr' | 'barcode'; column?: string; assetKey?: string; text?: string };
+  | { type: 'media'; kind: 'image' | 'qr' | 'barcode'; column?: string; group?: string; assetKey?: string; text?: string };
 
 const HISTORY_LIMIT = 100;
 const COALESCE_MS = 800;
@@ -113,7 +121,7 @@ export const buildField = (
   const at = pos ?? { x: center.x - box.width / 2, y: center.y - box.height / 2 };
   const label =
     spec.kind === 'image'
-      ? asset?.name ?? spec.column ?? 'Image'
+      ? asset?.name ?? spec.group ?? spec.column ?? 'Image'
       : `${spec.kind === 'qr' ? 'QR' : 'Barcode'}: ${spec.column ?? spec.text ?? ''}`;
   return {
     id,
@@ -128,6 +136,7 @@ export const buildField = (
     height: box.height,
     imageSrc: spec.kind === 'image' && !spec.column ? spec.assetKey : undefined,
     imageColumn: spec.column,
+    imageGroup: spec.group,
     codeText: spec.kind !== 'image' && !spec.column ? spec.text ?? '' : undefined,
     fit: 'contain',
     shape: 'rect',
@@ -237,7 +246,11 @@ export function useStudio() {
   // ---------------- derived data ----------------
   const merged = useMemo(() => mergeDatasets(datasets), [datasets]);
   const excelHeaders = merged.headers;
-  const allRows: ExcelRow[] = merged.rows;
+  // Tag each row with its position so pictures can be matched by order (see ROW_INDEX_KEY).
+  const allRows: ExcelRow[] = useMemo(
+    () => merged.rows.map((row, i) => ({ ...row, [ROW_INDEX_KEY]: i })),
+    [merged.rows]
+  );
   const activeRows = useMemo(
     () => (excluded.size === 0 ? allRows : allRows.filter((_, i) => !excluded.has(i))),
     [allRows, excluded]
@@ -334,13 +347,15 @@ export function useStudio() {
         }
         try {
           if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
-            // Every page of a PDF becomes its own picture ("name.pdf (page 2)").
-            const { pages, totalPages } = await loadTemplatePages(file);
-            pages.forEach((p) => added.push(createAssetFromImage(p.name, p.image)));
-            if (totalPages > pages.length) {
-              notify('warning', `"${file.name}" has ${totalPages} pages; the first ${pages.length} were added.`);
-            } else if (pages.length > 1) {
-              notify('success', `"${file.name}": ${pages.length} pages added as pictures.`);
+            // Every page of a PDF becomes its own picture, kept in page order ("name.pdf (page 2)").
+            const { assets: pageAssets, totalPages } = await createAssetsFromPdf(file, (page, total) =>
+              setBusy(`Reading "${file.name}": page ${page} of ${total}… keep this tab open`)
+            );
+            added.push(...pageAssets);
+            if (totalPages > MAX_PDF_IMAGE_PAGES) {
+              notify('warning', `"${file.name}" has ${totalPages} pages; the first ${MAX_PDF_IMAGE_PAGES} were added.`);
+            } else if (pageAssets.length > 1) {
+              notify('success', `"${file.name}": all ${pageAssets.length} pages added as pictures, in order.`);
             }
           } else {
             added.push(await createAssetFromFile(file));
@@ -354,6 +369,7 @@ export function useStudio() {
         setAssets((prev) => {
           // A re-uploaded file with the same name replaces the old one.
           const keys = new Set(added.map((a) => a.key));
+          prev.filter((a) => keys.has(a.key)).forEach(releaseAsset);
           return [...prev.filter((a) => !keys.has(a.key)), ...added];
         });
       }
@@ -362,7 +378,18 @@ export function useStudio() {
   );
 
   const removeImage = useCallback((id: string) => {
-    setAssets((prev) => prev.filter((a) => a.id !== id));
+    setAssets((prev) => {
+      prev.filter((a) => a.id === id).forEach(releaseAsset);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+
+  /** Remove every page picture that came from one PDF. */
+  const removeImageGroup = useCallback((group: string) => {
+    setAssets((prev) => {
+      prev.filter((a) => a.group === group).forEach(releaseAsset);
+      return prev.filter((a) => a.group !== group);
+    });
   }, []);
 
   // ---------------- placing fields ----------------
@@ -724,6 +751,7 @@ export function useStudio() {
     removeDataset,
     addImages,
     removeImage,
+    removeImageGroup,
     toggleRowExcluded,
     setRowsExcluded,
     loadSample,

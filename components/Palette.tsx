@@ -5,6 +5,7 @@ import { Barcode, ChevronDown, Image as ImageIcon, QrCode, Type } from 'lucide-r
 import HeaderChip from './HeaderChip';
 import CombinedFieldBuilder from './CombinedFieldBuilder';
 import type { FieldSpec, Studio } from '@/lib/useStudio';
+import { listGroups } from '@/lib/assets';
 
 type MediaKind = 'image' | 'qr' | 'barcode';
 
@@ -22,17 +23,27 @@ const selectClass =
 function AddMediaForm({ kind, studio, onDone }: { kind: MediaKind; studio: Studio; onDone: () => void }) {
   const { excelHeaders, assets } = studio;
   const hasColumns = excelHeaders.length > 0;
-  const hasAssets = assets.length > 0;
-  const [mode, setMode] = useState<'fixed' | 'column'>(hasColumns && !(kind === 'image' && hasAssets) ? 'column' : 'fixed');
+  const groups = listGroups(assets);
+  const hasGroups = kind === 'image' && groups.length > 0;
+  // Pictures to choose from for "same on every document": standalone images + pages of small PDFs.
+  const fixedChoices = assets.filter((a) => !a.group || (groups.find((g) => g.name === a.group)?.pages.length ?? 0) <= 12);
+  const hasAssets = fixedChoices.length > 0;
+  const [mode, setMode] = useState<'fixed' | 'column' | 'order'>(
+    hasGroups ? 'order' : hasColumns && !(kind === 'image' && hasAssets) ? 'column' : 'fixed'
+  );
+  const [group, setGroup] = useState('');
+  const effectiveGroup = group || groups[0]?.name || '';
   const [column, setColumn] = useState('');
   const [assetKey, setAssetKey] = useState('');
   const [text, setText] = useState('');
 
   const effectiveColumn = column || excelHeaders[0] || '';
-  const effectiveAsset = assetKey || assets[0]?.key || '';
+  const effectiveAsset = assetKey || fixedChoices[0]?.key || '';
 
   const add = () => {
-    if (mode === 'column') {
+    if (mode === 'order') {
+      studio.addField({ type: 'media', kind, group: effectiveGroup });
+    } else if (mode === 'column') {
       studio.addField({ type: 'media', kind, column: effectiveColumn });
     } else if (kind === 'image') {
       studio.addField({ type: 'media', kind, assetKey: effectiveAsset });
@@ -42,7 +53,7 @@ function AddMediaForm({ kind, studio, onDone }: { kind: MediaKind; studio: Studi
     onDone();
   };
 
-  const canAdd = mode === 'column' ? !!effectiveColumn : kind === 'image' ? !!effectiveAsset : text.trim() !== '';
+  const canAdd = mode === 'order' ? !!effectiveGroup : mode === 'column' ? !!effectiveColumn : kind === 'image' ? !!effectiveAsset : text.trim() !== '';
 
   const fixedLabel = kind === 'image' ? 'Same image on every document' : 'Same value on every document';
   const columnLabel = kind === 'image' ? 'Different image per row (from a column)' : 'Value from a data column';
@@ -50,7 +61,7 @@ function AddMediaForm({ kind, studio, onDone }: { kind: MediaKind; studio: Studi
   return (
     <div className="mt-3 space-y-3 rounded-xl border border-line bg-page p-3">
       <div className="space-y-1.5">
-        {(['fixed', 'column'] as const).map((m) => (
+        {(hasGroups ? (['order', 'fixed', 'column'] as const) : (['fixed', 'column'] as const)).map((m) => (
           <label
             key={m}
             className={`flex min-h-[44px] cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-sm ${
@@ -65,12 +76,24 @@ function AddMediaForm({ kind, studio, onDone }: { kind: MediaKind; studio: Studi
               onChange={() => setMode(m)}
               className="h-4 w-4 accent-[rgb(var(--c-accent))]"
             />
-            {m === 'fixed' ? fixedLabel : columnLabel}
+            {m === 'order' ? 'One picture per row, in PDF page order' : m === 'fixed' ? fixedLabel : columnLabel}
           </label>
         ))}
       </div>
 
-      {mode === 'column' ? (
+      {mode === 'order' ? (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted">PDF with the pictures</label>
+          <select value={effectiveGroup} onChange={(e) => setGroup(e.target.value)} className={selectClass}>
+            {groups.map((g) => (
+              <option key={g.name} value={g.name}>
+                {g.name} ({g.pages.length} pages)
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-xs text-muted">Row 1 gets page 1, row 2 gets page 2, and so on, in the same order as your data.</p>
+        </div>
+      ) : mode === 'column' ? (
         <div>
           <label className="mb-1 block text-xs font-medium text-muted">
             {kind === 'image' ? 'Column with image file names' : 'Column to encode'}
@@ -88,7 +111,7 @@ function AddMediaForm({ kind, studio, onDone }: { kind: MediaKind; studio: Studi
           <div>
             <label className="mb-1 block text-xs font-medium text-muted">Choose an image</label>
             <div className="grid grid-cols-4 gap-2">
-              {assets.map((a) => (
+              {fixedChoices.map((a) => (
                 <button
                   key={a.id}
                   type="button"

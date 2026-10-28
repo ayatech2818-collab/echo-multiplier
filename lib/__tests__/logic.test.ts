@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatValue, parseDateValue } from '../format';
-import { buildAssetIndex, findAsset, normalizeKey } from '../assets';
+import { buildAssetIndex, findAsset, findAssetByRow, normalizeKey, ROW_INDEX_KEY } from '../assets';
 import { parseLayout } from '../layoutIO';
 import { mergeDatasets } from '../fileParser';
 import { sheetGrid } from '../exportUtils';
@@ -164,5 +164,39 @@ describe('export checks', () => {
     const f = textField({ id: 's', kind: 'image', imageSrc: 'logo.png' });
     const checks = analyzeExport([f], [{ Name: 'A' }], [], '');
     expect(checks.some((c) => c.level === 'error')).toBe(true);
+  });
+});
+
+describe('pictures by PDF page order', () => {
+  const page = (n: number): ImageAsset => ({ ...asset(`photos.pdf (page ${n})`), group: 'photos.pdf', page: n });
+  // Deliberately out of order: the index must sort pages.
+  const index = buildAssetIndex([page(3), page(1), page(2), asset('logo.png')]);
+
+  it('groups pages and keeps page order', () => {
+    expect(index.groups.get('photos.pdf')?.map((a) => a.page)).toEqual([1, 2, 3]);
+    expect(index.groups.has('logo.png')).toBe(false);
+  });
+
+  it('matches row N to page N (row numbers are zero-based)', () => {
+    expect(findAssetByRow(index, 'photos.pdf', { [ROW_INDEX_KEY]: 0 })?.page).toBe(1);
+    expect(findAssetByRow(index, 'photos.pdf', { [ROW_INDEX_KEY]: 2 })?.page).toBe(3);
+  });
+
+  it('keeps the match when rows are left out (uses the original position)', () => {
+    // Row 2 survives while rows 0 and 1 are excluded: it must still get page 3, not page 1.
+    expect(findAssetByRow(index, 'photos.pdf', { [ROW_INDEX_KEY]: 2 })?.page).toBe(3);
+  });
+
+  it('returns null past the last page, for unknown PDFs, and for rows without a position', () => {
+    expect(findAssetByRow(index, 'photos.pdf', { [ROW_INDEX_KEY]: 3 })).toBeNull();
+    expect(findAssetByRow(index, 'other.pdf', { [ROW_INDEX_KEY]: 0 })).toBeNull();
+    expect(findAssetByRow(index, 'photos.pdf', { Name: 'x' })).toBeNull();
+  });
+
+  it('warns when there are fewer pages than rows', () => {
+    const field = textField({ id: 'p', kind: 'image', imageGroup: 'photos.pdf', headerName: 'photos.pdf' });
+    const rows = [0, 1, 2, 3, 4].map((i) => ({ Name: `n${i}`, [ROW_INDEX_KEY]: i }));
+    const checks = analyzeExport([field], rows, [page(1), page(2), page(3)], '');
+    expect(checks.some((c) => c.level === 'warning' && c.message.includes('2 rows have no page'))).toBe(true);
   });
 });
