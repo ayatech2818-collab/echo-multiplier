@@ -90,16 +90,13 @@ export default function ExportStep({
     [documents, activeTemplate]
   );
   const combineTemplates = studio.combineTemplates;
-  const combining = exportAllTemplates && combineTemplates && documents.length > 1;
-  const exportedDocs = combining
-    ? [documents.flat()]
-    : exportAllTemplates
-    ? documents
-    : activeDoc.length
-    ? [activeDoc]
-    : [];
+  const source = exportAllTemplates ? documents.flat() : activeDoc;
+  // The combine choice only appears when a multi-page template is being exported.
+  const hasMultiPageDoc = (exportAllTemplates ? documents : [activeDoc]).some((d) => d.length > 1);
+  const combine = hasMultiPageDoc && combineTemplates;
+  const exportedDocs = source.length <= 1 ? [source] : combine ? [source] : source.map((t) => [t]);
   const anyMultiPage = exportedDocs.some((pages) => pages.length > 1);
-  const pageCount = anyMultiPage ? (exportedDocs[0]?.length ?? activeDoc.length) : activeDoc.length;
+  const pageCount = exportedDocs[0]?.length ?? 1;
   const templateCount = exportedDocs.length;
   const totalDocs = activeRows.length * templateCount;
   const docW = activeTemplate?.image.width ?? 4;
@@ -213,9 +210,9 @@ export default function ExportStep({
       <section className="space-y-5 rounded-2xl border border-line bg-surface p-4 shadow-soft sm:p-5">
         {anyMultiPage && (
           <p className="rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm text-ink">
-            {combining ? 'These templates are combined into ' : 'This template is '}
+            {exportAllTemplates ? 'These templates combine into ' : 'This template is '}
             <strong className="font-medium">{pageCount} pages</strong>. Each data row becomes one{' '}
-            {outputFormat === 'image' ? 'set of page images' : 'combined document with every page'}.
+            {outputFormat === 'image' ? 'set of page images' : 'document with every page'}.
           </p>
         )}
 
@@ -241,28 +238,32 @@ export default function ExportStep({
                 </button>
               ))}
             </div>
+          </div>
+        )}
 
-            {exportAllTemplates && (
-              <div role="group" aria-label="How to combine templates" className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {[
-                  { on: false, label: 'Separate files per template', hint: 'Each template is its own document' },
-                  { on: true, label: 'Combine into one document', hint: 'All templates become pages of one PDF per row' },
-                ].map((opt) => (
-                  <button
-                    key={String(opt.on)}
-                    type="button"
-                    onClick={() => studio.setCombineTemplates(opt.on)}
-                    aria-pressed={combineTemplates === opt.on}
-                    className={`min-h-[56px] rounded-xl border px-3.5 py-2 text-left transition-colors ${
-                      combineTemplates === opt.on ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
-                    }`}
-                  >
-                    <span className="block truncate text-sm font-medium text-ink">{opt.label}</span>
-                    <span className="block text-xs text-muted">{opt.hint}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+        {/* Only meaningful for a multi-page template: combine its pages, or export one file per page. */}
+        {hasMultiPageDoc && (
+          <div>
+            <h2 className="mb-1.5 text-sm font-semibold text-ink">Pages</h2>
+            <div role="group" aria-label="How to export pages" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {[
+                { on: true, label: 'Combine pages into one file', hint: 'Every page in one PDF per row' },
+                { on: false, label: 'One file per page', hint: 'Each page exported on its own' },
+              ].map((opt) => (
+                <button
+                  key={String(opt.on)}
+                  type="button"
+                  onClick={() => studio.setCombineTemplates(opt.on)}
+                  aria-pressed={combineTemplates === opt.on}
+                  className={`min-h-[56px] rounded-xl border px-3.5 py-2 text-left transition-colors ${
+                    combineTemplates === opt.on ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
+                  }`}
+                >
+                  <span className="block truncate text-sm font-medium text-ink">{opt.label}</span>
+                  <span className="block text-xs text-muted">{opt.hint}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

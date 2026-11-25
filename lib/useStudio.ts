@@ -176,8 +176,9 @@ export function useStudio() {
   const [exportBatchSize, setExportBatchSize] = useState<ExportBatchSize>('all');
   const [filenameTemplate, setFilenameTemplate] = useState('');
   const [exportAllTemplates, setExportAllTemplates] = useState(false);
-  // With several separate templates selected: combine them all into one multi-page document per row.
-  const [combineTemplates, setCombineTemplates] = useState(false);
+  // When the export involves a multi-page template: combine its pages into one document per row.
+  // Only meaningful (and only shown) when a multi-page document is being exported.
+  const [combineTemplates, setCombineTemplates] = useState(true);
   const [perSheet, setPerSheet] = useState(1);
   const [sharpness, setSharpness] = useState<Sharpness>('auto');
   const [isExporting, setIsExporting] = useState(false);
@@ -816,17 +817,16 @@ export function useStudio() {
     if (isExporting) return;
     // Export whole documents (a document is one uploaded file's pages). Multi-page documents combine
     // their pages into one output per row; single-page documents export exactly as before.
-    const activeDocId = activeTemplate?.docId;
-    const jobDocs = exportAllTemplates
-      ? // Combine: treat every template page (across documents, in order) as one multi-page document.
-        combineTemplates
-        ? [documents.flat()]
-        : documents
-      : documents.filter((pages) => pages[0]?.docId === activeDocId);
-    if (jobDocs.length === 0 || activeRows.length === 0 || canvasFields.length === 0) {
+    // Pages to export: all templates (in order) or just the active document's pages.
+    const source = exportAllTemplates ? documents.flat() : activeDocPages;
+    if (source.length === 0 || activeRows.length === 0 || canvasFields.length === 0) {
       notify('info', 'You need a template, some data and at least one field before exporting.');
       return;
     }
+    // Combining only applies when a multi-page document is in play; otherwise each template is its own file.
+    const hasMultiPageDoc = (exportAllTemplates ? documents : [activeDocPages]).some((d) => d.length > 1);
+    const combine = hasMultiPageDoc && combineTemplates;
+    const jobDocs: TemplateItem[][] = source.length <= 1 ? [source] : combine ? [source] : source.map((t) => [t]);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -911,7 +911,7 @@ export function useStudio() {
     }
   }, [
     activeRows,
-    activeTemplate,
+    activeDocPages,
     assets,
     canvasFields,
     exportAllTemplates,

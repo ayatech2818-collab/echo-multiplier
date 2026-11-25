@@ -512,15 +512,22 @@ export default function CanvasWorkspace({ studio }: { studio: Studio }) {
     const update = () => {
       const wrap = wrapRef.current ?? container;
       const cs = getComputedStyle(wrap);
-      const padding = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-      const maxWidth = Math.max(160, wrap.clientWidth - padding - 2);
-      const maxHeight = Math.max(240, window.innerHeight - 300);
+      const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const maxWidth = Math.max(160, wrap.clientWidth - padX - 2);
+      // On desktop the box is a flex child with a definite height, so fit the page into the space it
+      // actually has (keeps the bar aligned and avoids guessing a reserve). Mobile keeps the old estimate.
+      const maxHeight =
+        window.innerWidth >= 1280
+          ? Math.max(240, wrap.clientHeight - padY - 2)
+          : Math.max(240, window.innerHeight - 300);
       const fit = Math.min(maxWidth / first.image.width, maxHeight / first.image.height, 1.8);
       setScale(Math.max(0.05, Math.min(fit * zoom, 3)));
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(container);
+    if (wrapRef.current) ro.observe(wrapRef.current);
     window.addEventListener('resize', update);
     return () => {
       ro.disconnect();
@@ -543,7 +550,7 @@ export default function CanvasWorkspace({ studio }: { studio: Studio }) {
   const multiPage = activeDocPages.length > 1;
 
   return (
-    <div className="relative w-full" ref={containerRef}>
+    <div className="relative w-full xl:flex xl:h-full xl:min-h-0 xl:flex-col" ref={containerRef}>
       <div className="mb-3 flex items-center justify-center gap-1.5">
         <button
           onClick={() => setZoom((z) => clampZoom(z - 0.25))}
@@ -579,7 +586,7 @@ export default function CanvasWorkspace({ studio }: { studio: Studio }) {
 
       <div
         ref={wrapRef}
-        className="canvas-touch w-full overflow-auto rounded-2xl bg-page/60 p-2 sm:p-4"
+        className="canvas-touch w-full overflow-auto rounded-2xl bg-page/60 p-2 sm:p-4 xl:min-h-0 xl:flex-1"
         onTouchStart={(e) => {
           if (e.touches.length === 2) pinchRef.current = { dist: touchDistance(e.touches), zoom };
         }}
