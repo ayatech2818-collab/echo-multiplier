@@ -176,6 +176,8 @@ export function useStudio() {
   const [exportBatchSize, setExportBatchSize] = useState<ExportBatchSize>('all');
   const [filenameTemplate, setFilenameTemplate] = useState('');
   const [exportAllTemplates, setExportAllTemplates] = useState(false);
+  // With several separate templates selected: combine them all into one multi-page document per row.
+  const [combineTemplates, setCombineTemplates] = useState(false);
   const [perSheet, setPerSheet] = useState(1);
   const [sharpness, setSharpness] = useState<Sharpness>('auto');
   const [isExporting, setIsExporting] = useState(false);
@@ -815,7 +817,12 @@ export function useStudio() {
     // Export whole documents (a document is one uploaded file's pages). Multi-page documents combine
     // their pages into one output per row; single-page documents export exactly as before.
     const activeDocId = activeTemplate?.docId;
-    const jobDocs = exportAllTemplates ? documents : documents.filter((pages) => pages[0]?.docId === activeDocId);
+    const jobDocs = exportAllTemplates
+      ? // Combine: treat every template page (across documents, in order) as one multi-page document.
+        combineTemplates
+        ? [documents.flat()]
+        : documents
+      : documents.filter((pages) => pages[0]?.docId === activeDocId);
     if (jobDocs.length === 0 || activeRows.length === 0 || canvasFields.length === 0) {
       notify('info', 'You need a template, some data and at least one field before exporting.');
       return;
@@ -917,6 +924,7 @@ export function useStudio() {
     sharpness,
     assetIndex,
     documents,
+    combineTemplates,
     resolveFieldTemplateId,
   ]);
 
@@ -989,6 +997,8 @@ export function useStudio() {
     setFilenameTemplate,
     exportAllTemplates,
     setExportAllTemplates,
+    combineTemplates,
+    setCombineTemplates,
     perSheet,
     setPerSheet,
     sharpness,

@@ -89,9 +89,18 @@ export default function ExportStep({
     () => documents.find((pages) => pages.some((p) => p.id === activeTemplate?.id)) ?? [],
     [documents, activeTemplate]
   );
-  const exportedDocs = exportAllTemplates ? documents : activeDoc.length ? [activeDoc] : [];
+  const combineTemplates = studio.combineTemplates;
+  const combining = exportAllTemplates && combineTemplates && documents.length > 1;
+  const exportedDocs = combining
+    ? [documents.flat()]
+    : exportAllTemplates
+    ? documents
+    : activeDoc.length
+    ? [activeDoc]
+    : [];
   const anyMultiPage = exportedDocs.some((pages) => pages.length > 1);
-  const templateCount = exportAllTemplates ? documents.length : 1;
+  const pageCount = anyMultiPage ? (exportedDocs[0]?.length ?? activeDoc.length) : activeDoc.length;
+  const templateCount = exportedDocs.length;
   const totalDocs = activeRows.length * templateCount;
   const docW = activeTemplate?.image.width ?? 4;
   const docH = activeTemplate?.image.height ?? 3;
@@ -204,7 +213,8 @@ export default function ExportStep({
       <section className="space-y-5 rounded-2xl border border-line bg-surface p-4 shadow-soft sm:p-5">
         {anyMultiPage && (
           <p className="rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm text-ink">
-            This template has <strong className="font-medium">{activeDoc.length} pages</strong>. Each data row becomes one{' '}
+            {combining ? 'These templates are combined into ' : 'This template is '}
+            <strong className="font-medium">{pageCount} pages</strong>. Each data row becomes one{' '}
             {outputFormat === 'image' ? 'set of page images' : 'combined document with every page'}.
           </p>
         )}
@@ -215,7 +225,7 @@ export default function ExportStep({
             <div role="group" aria-label="Which templates" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {[
                 { all: false, label: `Only “${activeTemplate?.name ?? 'current'}”`, hint: 'The one shown in Step 2' },
-                { all: true, label: `All ${documents.length} templates`, hint: 'One set of files for each template' },
+                { all: true, label: `All ${documents.length} templates`, hint: 'Export every template' },
               ].map((opt) => (
                 <button
                   key={String(opt.all)}
@@ -231,6 +241,28 @@ export default function ExportStep({
                 </button>
               ))}
             </div>
+
+            {exportAllTemplates && (
+              <div role="group" aria-label="How to combine templates" className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {[
+                  { on: false, label: 'Separate files per template', hint: 'Each template is its own document' },
+                  { on: true, label: 'Combine into one document', hint: 'All templates become pages of one PDF per row' },
+                ].map((opt) => (
+                  <button
+                    key={String(opt.on)}
+                    type="button"
+                    onClick={() => studio.setCombineTemplates(opt.on)}
+                    aria-pressed={combineTemplates === opt.on}
+                    className={`min-h-[56px] rounded-xl border px-3.5 py-2 text-left transition-colors ${
+                      combineTemplates === opt.on ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
+                    }`}
+                  >
+                    <span className="block truncate text-sm font-medium text-ink">{opt.label}</span>
+                    <span className="block text-xs text-muted">{opt.hint}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -424,7 +456,7 @@ export default function ExportStep({
           {ready || totalDocs > 0
             ? `${activeRows.length.toLocaleString()} document${activeRows.length === 1 ? '' : 's'}${
                 templateCount > 1 ? ` × ${templateCount} templates` : ''
-              }${anyMultiPage ? ` × ${activeDoc.length} pages` : ''}${!anyMultiPage && perSheet > 1 ? ` → ${(sheets * templateCount).toLocaleString()} page${sheets * templateCount === 1 ? '' : 's'} (${perSheet} per page)` : ''} → ${totalFiles} ${outputFormat === 'single-pdf' ? 'PDF' : 'ZIP'} file${totalFiles === 1 ? '' : 's'}`
+              }${anyMultiPage ? ` × ${pageCount} pages` : ''}${!anyMultiPage && perSheet > 1 ? ` → ${(sheets * templateCount).toLocaleString()} page${sheets * templateCount === 1 ? '' : 's'} (${perSheet} per page)` : ''} → ${totalFiles} ${outputFormat === 'single-pdf' ? 'PDF' : 'ZIP'} file${totalFiles === 1 ? '' : 's'}`
             : 'Nothing to export yet'}
         </p>
         {allRows.length > activeRows.length && (
