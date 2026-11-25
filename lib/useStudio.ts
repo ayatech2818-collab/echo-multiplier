@@ -84,7 +84,7 @@ export const buildField = (
   const center = { x: template.width / 2 + cascade, y: template.height / 2 + cascade };
   const id = generateId();
   const textBase = {
-    fontSize: 24,
+    fontSize: 50,
     fill: '#1d1d1f',
     fontStyle: 'normal' as const,
     fontFamily: 'Arial',
