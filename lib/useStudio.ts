@@ -289,6 +289,15 @@ export function useStudio() {
     });
     return [...byDoc.values()].map((arr) => [...arr].sort((a, b) => a.page - b.page));
   }, [templates]);
+  // Pages of the document the active page belongs to, in page order (what the designer stacks).
+  const activeDocPages = useMemo(
+    () => (activeTemplate ? documents.find((pages) => pages.some((p) => p.id === activeTemplate.id)) ?? [activeTemplate] : []),
+    [documents, activeTemplate]
+  );
+  const fieldsForTemplate = useCallback(
+    (tplId: string) => canvasFields.filter((f) => resolveFieldTemplateId(f) === tplId),
+    [canvasFields, resolveFieldTemplateId]
+  );
   // Drop the selection if its field disappeared (delete, undo) or lives on another page.
   const effectiveSelectedId = useMemo(
     () => (activeFields.some((f) => f.id === selectedFieldId) ? selectedFieldId : null),
@@ -469,8 +478,9 @@ export function useStudio() {
 
   // ---------------- placing fields ----------------
   const addField = useCallback(
-    (spec: FieldSpec, pos?: { x: number; y: number }) => {
-      if (!activeTemplate) {
+    (spec: FieldSpec, pos?: { x: number; y: number }, templateId?: string) => {
+      const target = (templateId ? templates.find((t) => t.id === templateId) : null) ?? activeTemplate;
+      if (!target) {
         notify('info', 'Add a template first (Step 1).');
         return null;
       }
@@ -478,17 +488,17 @@ export function useStudio() {
         ...buildField(
           spec,
           pos ?? null,
-          { width: activeTemplate.image.width, height: activeTemplate.image.height },
+          { width: target.image.width, height: target.image.height },
           assets,
           histRef.current.present.length
         ),
-        templateId: activeTemplate.id,
+        templateId: target.id,
       };
       setFields((prev) => [...prev, field]);
       setSelectedFieldId(field.id);
       return field;
     },
-    [activeTemplate, assets, notify, setFields]
+    [activeTemplate, templates, assets, notify, setFields]
   );
 
   const deleteSelected = useCallback(() => {
@@ -939,6 +949,8 @@ export function useStudio() {
     // design
     canvasFields,
     activeFields,
+    activeDocPages,
+    fieldsForTemplate,
     setFields,
     updateField,
     selectedFieldId: effectiveSelectedId,

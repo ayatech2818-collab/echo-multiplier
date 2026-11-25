@@ -166,6 +166,46 @@ function LayoutMenu({ studio, onShowData }: { studio: Studio; onShowData: () => 
   );
 }
 
+/**
+ * A hint that floats above the canvas (never pinned below a tall, multi-page stack). It fades out while
+ * the user scrolls and eases back in shortly after scrolling stops — on the window and on the inner
+ * canvas scroll box, so it behaves the same on mobile and desktop.
+ */
+function ScrollAwareHint({ show, children }: { show: boolean; children: React.ReactNode }) {
+  const [scrolling, setScrolling] = useState(false);
+  useEffect(() => {
+    if (!show) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const onScroll = () => {
+      setScrolling(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setScrolling(false), 240);
+    };
+    // Capture phase so the canvas's own overflow-auto scrolls are caught too (scroll doesn't bubble).
+    window.addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      document.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
+      clearTimeout(timer);
+    };
+  }, [show]);
+
+  if (!show) return null;
+  return (
+    <div
+      aria-live="polite"
+      className={`pointer-events-none fixed inset-x-0 bottom-24 z-30 flex justify-center px-4 transition-all duration-300 ease-out xl:bottom-6 ${
+        scrolling ? 'translate-y-3 opacity-0' : 'translate-y-0 opacity-100'
+      }`}
+    >
+      <p className="max-w-md rounded-full border border-dashed border-line-strong bg-surface/95 px-4 py-2 text-center text-sm text-muted shadow-pop backdrop-blur">
+        {children}
+      </p>
+    </div>
+  );
+}
+
 export default function DesignStep({
   studio,
   onBack,
@@ -323,13 +363,11 @@ export default function DesignStep({
 
           <CanvasWorkspace studio={studio} />
 
-          {activeFields.length === 0 && (
-            <p className="mt-3 rounded-xl border border-dashed border-line-strong bg-surface p-3 text-center text-sm text-muted">
-              <strong className="font-medium text-ink">Nothing placed on this page yet.</strong> Use{' '}
-              <span className="xl:hidden">the “Add” button below</span>
-              <span className="hidden xl:inline">the panel on the left</span> to put a field on your template.
-            </p>
-          )}
+          <ScrollAwareHint show={activeFields.length === 0}>
+            <strong className="font-medium text-ink">Nothing placed on this page yet.</strong> Use{' '}
+            <span className="xl:hidden">the “Add” button below</span>
+            <span className="hidden xl:inline">the panel on the left</span> to put a field on your template.
+          </ScrollAwareHint>
 
           <p className="mt-3 hidden text-xs text-muted xl:block">
             Shortcuts: <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">P</kbd> preview ·{' '}

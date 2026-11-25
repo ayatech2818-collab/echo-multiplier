@@ -14,7 +14,7 @@ import {
 } from 'react-konva';
 import Konva from 'konva';
 import { Maximize2, Minus, Plus } from 'lucide-react';
-import { CanvasField, ExcelRow } from '@/types';
+import { CanvasField, ExcelRow, TemplateItem } from '@/types';
 import { layoutCombined } from '@/lib/combinedLayout';
 import { resolveFieldText, isTextField } from '@/lib/utils';
 import { effectiveFontSize, measureText } from '@/lib/measure';
@@ -253,95 +253,71 @@ interface Guides {
   y: number | null;
 }
 
-export default function CanvasWorkspace({ studio }: { studio: Studio }) {
-  const {
-    activeTemplate,
-    activeFields: fields,
-    selectedFieldId,
-    previewMode,
-    previewRow,
-    snapEnabled,
-    assetIndex,
-  } = studio;
-  const templateImage = activeTemplate?.image ?? null;
-  const row = previewMode ? previewRow : null;
-
+/** One template page: its background, its own fields, a transformer and snap guides. */
+function PageCanvas({
+  studio,
+  template,
+  fields,
+  row,
+  selectedFieldId,
+  scale,
+  snapEnabled,
+  assetIndex,
+}: {
+  studio: Studio;
+  template: TemplateItem;
+  fields: CanvasField[];
+  row: ExcelRow | null;
+  selectedFieldId: string | null;
+  scale: number;
+  snapEnabled: boolean;
+  assetIndex: AssetIndex;
+}) {
   const stageRef = useRef<Konva.Stage>(null);
   const trRef = useRef<Konva.Transformer>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
-  const [zoom, setZoom] = useState(1);
   const [guides, setGuides] = useState<Guides>({ x: null, y: null });
-  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
-  // Edges of the *other* fields, captured when a drag starts so dragging stays cheap.
+  // Edges of the *other* fields on this page, captured when a drag starts so dragging stays cheap.
   const snapTargets = useRef<{ xs: number[]; ys: number[] }>({ xs: [], ys: [] });
 
   // Always-current copies so the stable handlers below never go stale.
-  const latest = useRef({ fields, scale, snapEnabled, studio, templateImage });
+  const latest = useRef({ fields, scale, snapEnabled, studio, template });
   useEffect(() => {
-    latest.current = { fields, scale, snapEnabled, studio, templateImage };
+    latest.current = { fields, scale, snapEnabled, studio, template };
   });
 
-  // Fit the template into the available space; zoom multiplies on top of that.
-  useEffect(() => {
-    if (!templateImage || !containerRef.current) return;
-    const container = containerRef.current;
-    const update = () => {
-      // Usable width = the scroll box minus its padding and the frame border around the stage.
-      const wrap = wrapRef.current ?? container;
-      const cs = getComputedStyle(wrap);
-      const padding = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-      const maxWidth = Math.max(160, wrap.clientWidth - padding - 2);
-      const maxHeight = Math.max(240, window.innerHeight - 300);
-      const fit = Math.min(maxWidth / templateImage.width, maxHeight / templateImage.height, 1.8);
-      setScale(Math.max(0.05, Math.min(fit * zoom, 3)));
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(container);
-    window.addEventListener('resize', update);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('resize', update);
-    };
-  }, [templateImage, zoom]);
-
-  // Attach resize handles to the selected image / QR / barcode field.
+  // Attach resize handles to the selected image / QR / barcode field (only when it's on this page).
   const selectedField = fields.find((f) => f.id === selectedFieldId) ?? null;
   const selectedIsMedia = !!selectedField && !isTextField(selectedField);
   useEffect(() => {
     const tr = trRef.current;
     const stage = stageRef.current;
     if (!tr || !stage) return;
-    if (selectedIsMedia && selectedFieldId) {
-      const node = stage.findOne(`#${CSS.escape(selectedFieldId)}`);
+    if (selectedIsMedia && selectedField) {
+      const node = stage.findOne(`#${CSS.escape(selectedField.id)}`);
       tr.nodes(node ? [node] : []);
     } else {
       tr.nodes([]);
     }
     tr.getLayer()?.batchDraw();
-  }, [selectedFieldId, selectedIsMedia, fields, scale]);
+  }, [selectedField, selectedIsMedia, fields, scale]);
 
-  /* ---- handlers (stable identity so memoized nodes don't re-render) ---- */
+  const makeActive = () => studio.setActiveTemplateId(template.id);
 
   const handleSelect = useCallback((e: Konva.KonvaEventObject<Event>) => {
     latest.current.studio.setSelectedFieldId(e.currentTarget.id());
+    latest.current.studio.setActiveTemplateId(latest.current.template.id);
   }, []);
 
   const handleDragStart = useCallback((e: Konva.KonvaEventObject<DragEvent>) => {
     const node = e.target;
     const id = node.id();
-    const { studio: s, fields: fs, templateImage: tpl } = latest.current;
+    const { studio: s, fields: fs, template: tpl } = latest.current;
     s.setSelectedFieldId(id);
+    s.setActiveTemplateId(tpl.id);
 
     const layer = node.getLayer();
-    const xs: number[] = [];
-    const ys: number[] = [];
-    if (tpl) {
-      xs.push(0, tpl.width / 2, tpl.width);
-      ys.push(0, tpl.height / 2, tpl.height);
-    }
+    const xs: number[] = [0, tpl.image.width / 2, tpl.image.width];
+    const ys: number[] = [0, tpl.image.height / 2, tpl.image.height];
     if (layer) {
       fs.forEach((f) => {
         if (f.id === id) return;
@@ -423,8 +399,7 @@ export default function CanvasWorkspace({ studio }: { studio: Studio }) {
     [handleSelect, handleDragStart, handleDragMove, handleDragEnd]
   );
 
-  /* ---- drop from the palette (desktop drag-and-drop) ---- */
-
+  // Drop from the palette (desktop drag-and-drop) lands on THIS page.
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const raw = e.dataTransfer.getData(FIELD_DND_TYPE);
@@ -437,18 +412,135 @@ export default function CanvasWorkspace({ studio }: { studio: Studio }) {
     }
     if (!spec) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    studio.addField(spec, { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale });
+    studio.addField(spec, { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale }, template.id);
   };
 
-  /* ---- zoom ---- */
+  const img = template.image;
+  const stageW = img.width * scale;
+  const stageH = img.height * scale;
+  const lineWidth = 1 / scale;
+
+  return (
+    <div
+      className="mx-auto overflow-hidden rounded-xl border border-line bg-surface shadow-soft"
+      style={{ width: stageW, height: stageH }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handleDrop}
+    >
+      <Stage
+        ref={stageRef}
+        width={stageW}
+        height={stageH}
+        scaleX={scale}
+        scaleY={scale}
+        onClick={(e) => {
+          if (e.target === e.target.getStage()) studio.setSelectedFieldId(null);
+          makeActive();
+        }}
+        onTap={(e) => {
+          if (e.target === e.target.getStage()) studio.setSelectedFieldId(null);
+          makeActive();
+        }}
+      >
+        <Layer listening={false}>
+          <KonvaImage image={img} width={img.width} height={img.height} />
+        </Layer>
+        <Layer>
+          {fields.map((field) => {
+            const selected = selectedFieldId === field.id;
+            if (!isTextField(field)) {
+              return (
+                <MediaFieldNode
+                  key={field.id}
+                  field={field}
+                  row={row}
+                  assets={assetIndex}
+                  selected={selected}
+                  handlers={handlers}
+                  onTransformEnd={handleTransformEnd}
+                />
+              );
+            }
+            if (field.segments) {
+              return <CombinedFieldNode key={field.id} field={field} row={row} selected={selected} handlers={handlers} />;
+            }
+            return <TextFieldNode key={field.id} field={field} row={row} selected={selected} handlers={handlers} />;
+          })}
+          <Transformer
+            ref={trRef}
+            rotateEnabled={false}
+            flipEnabled={false}
+            keepRatio={selectedField ? selectedField.kind === 'qr' || selectedField.lockRatio !== false : true}
+            enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center']}
+            anchorSize={Math.max(10, 18 / scale)}
+            anchorCornerRadius={4}
+            borderStroke={SELECT_COLOR}
+            anchorStroke={SELECT_COLOR}
+            boundBoxFunc={(oldBox, newBox) => (newBox.width < 8 || newBox.height < 8 ? oldBox : newBox)}
+          />
+        </Layer>
+        {snapEnabled && (guides.x !== null || guides.y !== null) && (
+          <Layer listening={false}>
+            {guides.x !== null && (
+              <Line points={[guides.x, 0, guides.x, img.height]} stroke="#ec4899" strokeWidth={lineWidth} dash={[6 / scale, 4 / scale]} />
+            )}
+            {guides.y !== null && (
+              <Line points={[0, guides.y, img.width, guides.y]} stroke="#ec4899" strokeWidth={lineWidth} dash={[6 / scale, 4 / scale]} />
+            )}
+          </Layer>
+        )}
+      </Stage>
+    </div>
+  );
+}
+
+export default function CanvasWorkspace({ studio }: { studio: Studio }) {
+  const { activeTemplate, activeDocPages, selectedFieldId, previewMode, previewRow, snapEnabled, assetIndex } = studio;
+  const row = previewMode ? previewRow : null;
+  const first = activeDocPages[0] ?? null;
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+
+  // Fit a page into the available space (all pages of a document share a size); zoom multiplies on top.
+  useEffect(() => {
+    if (!first || !containerRef.current) return;
+    const container = containerRef.current;
+    const update = () => {
+      const wrap = wrapRef.current ?? container;
+      const cs = getComputedStyle(wrap);
+      const padding = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      const maxWidth = Math.max(160, wrap.clientWidth - padding - 2);
+      const maxHeight = Math.max(240, window.innerHeight - 300);
+      const fit = Math.min(maxWidth / first.image.width, maxHeight / first.image.height, 1.8);
+      setScale(Math.max(0.05, Math.min(fit * zoom, 3)));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(container);
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [first, zoom]);
+
+  // Picking a page from the toolbar dropdown scrolls it into view (no-op when already visible).
+  useEffect(() => {
+    if (!activeTemplate || activeDocPages.length <= 1) return;
+    wrapRef.current
+      ?.querySelector(`[data-page-id="${CSS.escape(activeTemplate.id)}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [activeTemplate, activeDocPages.length]);
 
   const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
   const touchDistance = (t: React.TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
 
-  if (!templateImage) return null;
-  const stageW = templateImage.width * scale;
-  const stageH = templateImage.height * scale;
-  const lineWidth = 1 / scale;
+  if (!first) return null;
+  const multiPage = activeDocPages.length > 1;
 
   return (
     <div className="relative w-full" ref={containerRef}>
@@ -485,84 +577,44 @@ export default function CanvasWorkspace({ studio }: { studio: Studio }) {
         </button>
       </div>
 
-      <div ref={wrapRef} className="canvas-touch w-full overflow-auto rounded-2xl bg-page/60 p-2 sm:p-4">
-        <div
-          className="mx-auto overflow-hidden rounded-xl border border-line bg-surface shadow-soft"
-          style={{ width: stageW, height: stageH }}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={handleDrop}
-          onTouchStart={(e) => {
-            if (e.touches.length === 2) pinchRef.current = { dist: touchDistance(e.touches), zoom };
-          }}
-          onTouchMove={(e) => {
-            const p = pinchRef.current;
-            if (p && e.touches.length === 2 && p.dist > 0) setZoom(clampZoom(p.zoom * (touchDistance(e.touches) / p.dist)));
-          }}
-          onTouchEnd={(e) => {
-            if (e.touches.length < 2) pinchRef.current = null;
-          }}
-        >
-          <Stage
-            ref={stageRef}
-            width={stageW}
-            height={stageH}
-            scaleX={scale}
-            scaleY={scale}
-            onClick={(e) => {
-              if (e.target === e.target.getStage()) studio.setSelectedFieldId(null);
-            }}
-            onTap={(e) => {
-              if (e.target === e.target.getStage()) studio.setSelectedFieldId(null);
-            }}
-          >
-            <Layer listening={false}>
-              <KonvaImage image={templateImage} width={templateImage.width} height={templateImage.height} />
-            </Layer>
-            <Layer>
-              {fields.map((field) => {
-                const selected = selectedFieldId === field.id;
-                if (!isTextField(field)) {
-                  return (
-                    <MediaFieldNode
-                      key={field.id}
-                      field={field}
-                      row={row}
-                      assets={assetIndex}
-                      selected={selected}
-                      handlers={handlers}
-                      onTransformEnd={handleTransformEnd}
-                    />
-                  );
-                }
-                if (field.segments) {
-                  return <CombinedFieldNode key={field.id} field={field} row={row} selected={selected} handlers={handlers} />;
-                }
-                return <TextFieldNode key={field.id} field={field} row={row} selected={selected} handlers={handlers} />;
-              })}
-              <Transformer
-                ref={trRef}
-                rotateEnabled={false}
-                flipEnabled={false}
-                keepRatio={selectedField ? selectedField.kind === 'qr' || selectedField.lockRatio !== false : true}
-                enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center']}
-                anchorSize={Math.max(10, 18 / scale)}
-                anchorCornerRadius={4}
-                borderStroke={SELECT_COLOR}
-                anchorStroke={SELECT_COLOR}
-                boundBoxFunc={(oldBox, newBox) => (newBox.width < 8 || newBox.height < 8 ? oldBox : newBox)}
+      <div
+        ref={wrapRef}
+        className="canvas-touch w-full overflow-auto rounded-2xl bg-page/60 p-2 sm:p-4"
+        onTouchStart={(e) => {
+          if (e.touches.length === 2) pinchRef.current = { dist: touchDistance(e.touches), zoom };
+        }}
+        onTouchMove={(e) => {
+          const p = pinchRef.current;
+          if (p && e.touches.length === 2 && p.dist > 0) setZoom(clampZoom(p.zoom * (touchDistance(e.touches) / p.dist)));
+        }}
+        onTouchEnd={(e) => {
+          if (e.touches.length < 2) pinchRef.current = null;
+        }}
+      >
+        <div className="mx-auto flex flex-col items-center gap-5" style={{ width: first.image.width * scale }}>
+          {activeDocPages.map((tpl, i) => (
+            <div key={tpl.id} data-page-id={tpl.id} className="flex w-full flex-col items-center gap-1.5">
+              {multiPage && (
+                <span
+                  className={`self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                    tpl.id === activeTemplate?.id ? 'bg-accent-soft text-accent' : 'bg-page text-muted'
+                  }`}
+                >
+                  Page {i + 1} of {activeDocPages.length}
+                </span>
+              )}
+              <PageCanvas
+                studio={studio}
+                template={tpl}
+                fields={studio.fieldsForTemplate(tpl.id)}
+                row={row}
+                selectedFieldId={selectedFieldId}
+                scale={scale}
+                snapEnabled={snapEnabled}
+                assetIndex={assetIndex}
               />
-            </Layer>
-            {snapEnabled && (guides.x !== null || guides.y !== null) && (
-              <Layer listening={false}>
-                {guides.x !== null && (
-                  <Line points={[guides.x, 0, guides.x, templateImage.height]} stroke="#ec4899" strokeWidth={lineWidth} dash={[6 / scale, 4 / scale]} />
-                )}
-                {guides.y !== null && (
-                  <Line points={[0, guides.y, templateImage.width, guides.y]} stroke="#ec4899" strokeWidth={lineWidth} dash={[6 / scale, 4 / scale]} />
-                )}
-              </Layer>
-            )}
-          </Stage>
+            </div>
+          ))}
         </div>
       </div>
     </div>
