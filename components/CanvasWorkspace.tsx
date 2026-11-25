@@ -256,7 +256,7 @@ interface Guides {
 export default function CanvasWorkspace({ studio }: { studio: Studio }) {
   const {
     activeTemplate,
-    canvasFields: fields,
+    activeFields: fields,
     selectedFieldId,
     previewMode,
     previewRow,

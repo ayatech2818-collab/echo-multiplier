@@ -704,6 +704,145 @@ export const exportSinglePDF = async (
   return volumes;
 };
 
+/** One page of a multi-page document: its background and the fields placed on that page. */
+export interface DocPage {
+  image: HTMLImageElement;
+  fields: CanvasField[];
+}
+
+/**
+ * Export a multi-page template (several template pages that make up one document). For each row every
+ * page is rendered with its own fields and the pages are combined:
+ *  - 'pdf'        → one multi-page PDF per row, zipped;
+ *  - 'image'      → one image per page ("name (page N).png"), zipped;
+ *  - 'single-pdf' → every row's pages appended into one big PDF.
+ * `perSheet` does not apply here (a multi-page document is always one document per output).
+ */
+export const exportMultiPage = async (
+  pages: DocPage[],
+  assets: ImageAsset[],
+  rows: ExcelRow[],
+  filenameTemplate: string,
+  format: OutputFormat,
+  options: ExportOptions = {},
+  progressOffset: number = 0,
+  progressTotal: number = rows.length
+): Promise<ExportVolume[]> => {
+  if (rows.length === 0) throw new Error('No data to export');
+  const { default: JSZip } = await import('jszip');
+  const { default: jsPDF } = await import('jspdf');
+  const { onProgress, signal, stats } = options;
+  const quality = options.quality ?? 'max';
+  const scale = options.scale ?? 1;
+  const enc = encodingFor(quality);
+  const index = buildAssetIndex(assets);
+  const allFields = pages.flatMap((p) => p.fields);
+  const targets = pages.map((p) => createExportStage(p.image));
+  const jobs: ExportJob[] = pages.map((p) => ({ templateImage: p.image, fields: p.fields, assets }));
+  const volumes: ExportVolume[] = [];
+
+  const renderRowPages = async (row: ExcelRow): Promise<RenderedPage[]> => {
+    const out: RenderedPage[] = [];
+    for (let p = 0; p < pages.length; p++) {
+      out.push(await renderPage(targets[p], jobs[p], index, [row], 1, quality, scale, stats));
+    }
+    return out;
+  };
+
+  const newPdf = (first: RenderedPage) =>
+    new jsPDF({ orientation: first.width > first.height ? 'landscape' : 'portrait', unit: 'px', format: [first.width, first.height] });
+
+  try {
+    if (format === 'single-pdf') {
+      const limit = pdfLimitBytes();
+      let pdf: InstanceType<typeof jsPDF> | null = null;
+      let volumeBytes = 0;
+      let volumeStart = 1;
+      for (let r = 0; r < rows.length; r++) {
+        throwIfAborted(signal);
+        const rendered = await renderRowPages(rows[r]);
+        const rowBytes = rendered.reduce((s, p) => s + dataUrlBytes(p.url), 0);
+        if (pdf && volumeBytes + rowBytes > limit) {
+          volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: r });
+          pdf = null;
+          volumeBytes = 0;
+          volumeStart = r + 1;
+        }
+        for (let i = 0; i < rendered.length; i++) {
+          const rp = rendered[i];
+          if (!pdf) pdf = newPdf(rp);
+          else pdf.addPage([rp.width, rp.height]);
+          pdf.addImage(rp.url, enc.pdfType, 0, 0, rp.width, rp.height, undefined, 'FAST');
+        }
+        volumeBytes += rowBytes;
+        onProgress?.(progressOffset + r + 1, progressTotal);
+        await yieldToBrowser();
+      }
+      if (pdf) volumes.push({ blob: pdf.output('blob'), startRecord: volumeStart, endRecord: rows.length });
+      return volumes;
+    }
+
+    // 'image' / 'pdf': one output (a set of images, or one multi-page PDF) per row, collected into ZIPs.
+    const limit = zipLimitBytes();
+    let zip = new JSZip();
+    let usedNames = new Map<string, number>();
+    let currentZipBytes = 0;
+    let volumeStart = 1;
+    for (let r = 0; r < rows.length; r++) {
+      throwIfAborted(signal);
+      const row = rows[r];
+      const auto = sanitizeFilename(autoNameValue(allFields, row));
+      let filename = generateFilename(filenameTemplate, row, auto || `document-${r + 1}`);
+      const count = usedNames.get(filename) ?? 0;
+      usedNames.set(filename, count + 1);
+      if (count > 0) filename = `${filename} (${count + 1})`;
+
+      const rendered = await renderRowPages(row);
+      const entries: { name: string; blob: Blob }[] = [];
+      if (format === 'image') {
+        for (let p = 0; p < rendered.length; p++) {
+          entries.push({ name: `${filename} (page ${p + 1}).${enc.ext}`, blob: await dataUrlToBlob(rendered[p].url) });
+        }
+      } else {
+        const pdf = newPdf(rendered[0]);
+        pdf.addImage(rendered[0].url, enc.pdfType, 0, 0, rendered[0].width, rendered[0].height, undefined, 'FAST');
+        for (let p = 1; p < rendered.length; p++) {
+          pdf.addPage([rendered[p].width, rendered[p].height]);
+          pdf.addImage(rendered[p].url, enc.pdfType, 0, 0, rendered[p].width, rendered[p].height, undefined, 'FAST');
+        }
+        entries.push({ name: `${filename}.pdf`, blob: pdf.output('blob') });
+      }
+
+      const rowBytes = entries.reduce((s, e) => s + e.blob.size, 0);
+      if (currentZipBytes > 0 && currentZipBytes + rowBytes > limit) {
+        volumes.push({
+          blob: await zip.generateAsync({ type: 'blob', compression: 'STORE' }),
+          startRecord: volumeStart,
+          endRecord: r,
+        });
+        zip = new JSZip();
+        usedNames = new Map([[filename, 1]]);
+        currentZipBytes = 0;
+        volumeStart = r + 1;
+      }
+      entries.forEach((e) => zip.file(e.name, e.blob));
+      currentZipBytes += rowBytes;
+      onProgress?.(progressOffset + r + 1, progressTotal);
+      await yieldToBrowser();
+    }
+    if (currentZipBytes > 0) {
+      volumes.push({
+        blob: await zip.generateAsync({ type: 'blob', compression: 'STORE' }),
+        startRecord: volumeStart,
+        endRecord: rows.length,
+      });
+    }
+    return volumes;
+  } finally {
+    targets.forEach(destroyTarget);
+  }
+};
+
 export const downloadZip = (blob: Blob, filename: string = 'documents.zip') => {
   saveAs(blob, filename);
 };

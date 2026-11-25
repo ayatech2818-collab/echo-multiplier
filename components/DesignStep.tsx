@@ -179,7 +179,7 @@ export default function DesignStep({
   const [propsOpen, setPropsOpen] = useState(false);
   const [segmentId, setSegmentId] = useState<string | null>(null);
   const [showData, setShowData] = useState(false);
-  const { activeTemplate, templates, canvasFields, selectedFieldId, previewMode, activeRows } = studio;
+  const { activeTemplate, templates, activeFields, selectedFieldId, previewMode, activeRows } = studio;
 
   if (!activeTemplate) {
     return (
@@ -323,9 +323,9 @@ export default function DesignStep({
 
           <CanvasWorkspace studio={studio} />
 
-          {canvasFields.length === 0 && (
+          {activeFields.length === 0 && (
             <p className="mt-3 rounded-xl border border-dashed border-line-strong bg-surface p-3 text-center text-sm text-muted">
-              <strong className="font-medium text-ink">Nothing placed yet.</strong> Use{' '}
+              <strong className="font-medium text-ink">Nothing placed on this page yet.</strong> Use{' '}
               <span className="xl:hidden">the “Add” button below</span>
               <span className="hidden xl:inline">the panel on the left</span> to put a field on your template.
             </p>
