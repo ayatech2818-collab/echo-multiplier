@@ -52,7 +52,7 @@ function Panel({
         aria-label={title}
         className={`fixed inset-x-0 bottom-0 z-50 mx-auto max-h-[78dvh] max-w-xl xl:mx-0 xl:max-w-none overflow-y-auto rounded-t-2xl border-t border-line bg-surface px-4 pb-safe pt-3 shadow-pop transition-transform duration-200 thin-scroll ${
           open ? 'visible translate-y-0' : 'invisible translate-y-full'
-        } xl:visible xl:sticky xl:top-20 xl:max-h-[calc(100dvh-110px)] xl:translate-y-0 xl:rounded-2xl xl:border xl:p-4 xl:shadow-soft ${className}`}
+        } xl:visible xl:sticky xl:top-20 xl:h-[calc(100dvh-195px)] xl:max-h-none xl:translate-y-0 xl:rounded-2xl xl:border xl:p-4 xl:shadow-soft ${className}`}
       >
         <div className="mb-3 flex items-center justify-between xl:hidden">
           <h2 className="text-base font-semibold text-ink">{title}</h2>
@@ -166,6 +166,55 @@ function LayoutMenu({ studio, onShowData }: { studio: Studio; onShowData: () => 
   );
 }
 
+/**
+ * True while the user is actively scrolling (window or any inner overflow box), flipping back to false
+ * ~240ms after scrolling stops. Used to fade floating UI out of the way during a scroll.
+ */
+function useScrollIdle(enabled = true) {
+  const [scrolling, setScrolling] = useState(false);
+  useEffect(() => {
+    if (!enabled) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const onScroll = () => {
+      setScrolling(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setScrolling(false), 240);
+    };
+    // Capture phase so the canvas's own overflow-auto scrolls are caught too (scroll doesn't bubble).
+    window.addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      document.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
+      clearTimeout(timer);
+    };
+  }, [enabled]);
+  return scrolling;
+}
+
+/**
+ * A hint that floats above the canvas (never pinned below a tall, multi-page stack). It fades out while
+ * the user scrolls and eases back in shortly after scrolling stops — on the window and on the inner
+ * canvas scroll box, so it behaves the same on mobile and desktop.
+ */
+function ScrollAwareHint({ show, children }: { show: boolean; children: React.ReactNode }) {
+  const scrolling = useScrollIdle(show);
+
+  if (!show) return null;
+  return (
+    <div
+      aria-live="polite"
+      className={`pointer-events-none fixed inset-x-0 bottom-24 z-30 flex justify-center px-4 transition-all duration-300 ease-out xl:bottom-6 ${
+        scrolling ? 'translate-y-3 opacity-0' : 'translate-y-0 opacity-100'
+      }`}
+    >
+      <p className="max-w-md rounded-full border border-dashed border-line-strong bg-surface/95 px-4 py-2 text-center text-sm text-muted shadow-pop backdrop-blur">
+        {children}
+      </p>
+    </div>
+  );
+}
+
 export default function DesignStep({
   studio,
   onBack,
@@ -179,7 +228,7 @@ export default function DesignStep({
   const [propsOpen, setPropsOpen] = useState(false);
   const [segmentId, setSegmentId] = useState<string | null>(null);
   const [showData, setShowData] = useState(false);
-  const { activeTemplate, templates, canvasFields, selectedFieldId, previewMode, activeRows } = studio;
+  const { activeTemplate, templates, activeFields, selectedFieldId, previewMode, activeRows } = studio;
 
   if (!activeTemplate) {
     return (
@@ -204,6 +253,8 @@ export default function DesignStep({
 
   const hasData = activeRows.length > 0;
   const selected = !!selectedFieldId;
+  // Desktop action bar is pinned to the bottom; it slides away while scrolling so it never sits over the template.
+  const scrolling = useScrollIdle();
 
   return (
     <div className="pb-24 xl:pb-0">
@@ -215,14 +266,14 @@ export default function DesignStep({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px] xl:items-start">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)_320px] xl:items-start">
         {/* Left: what to add */}
         <Panel open={paletteOpen} onClose={() => setPaletteOpen(false)} title="Add to template">
           <Palette studio={studio} onPlaced={() => setPaletteOpen(false)} />
         </Panel>
 
         {/* Center: canvas */}
-        <section className="min-w-0">
+        <section className="min-w-0 xl:flex xl:h-[calc(100dvh-195px)] xl:flex-col">
           {/* Toolbar */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {templates.length > 1 && (
@@ -321,40 +372,49 @@ export default function DesignStep({
             </div>
           )}
 
-          <CanvasWorkspace studio={studio} />
+          <div className="min-w-0 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
+            <CanvasWorkspace studio={studio} />
+          </div>
 
-          {canvasFields.length === 0 && (
-            <p className="mt-3 rounded-xl border border-dashed border-line-strong bg-surface p-3 text-center text-sm text-muted">
-              <strong className="font-medium text-ink">Nothing placed yet.</strong> Use{' '}
-              <span className="xl:hidden">the “Add” button below</span>
-              <span className="hidden xl:inline">the panel on the left</span> to put a field on your template.
-            </p>
-          )}
+          <ScrollAwareHint show={activeFields.length === 0}>
+            <strong className="font-medium text-ink">Nothing placed on this page yet.</strong> Use{' '}
+            <span className="xl:hidden">the “Add” button below</span>
+            <span className="hidden xl:inline">the panel on the left</span> to put a field on your template.
+          </ScrollAwareHint>
 
-          <p className="mt-3 hidden text-xs text-muted xl:block">
-            Shortcuts: <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">P</kbd> preview ·{' '}
-            <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Arrows</kbd> nudge ·{' '}
-            <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Ctrl+Z</kbd> undo ·{' '}
-            <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Ctrl+D</kbd> duplicate ·{' '}
-            <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Del</kbd> remove ·{' '}
-            <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Esc</kbd> deselect
-          </p>
+          {/* Desktop: pinned to the bottom of the canvas column only (never over the side panels), sliding away while scrolling. Mobile: normal flow. */}
+          <div
+            className={`transition-opacity duration-300 ease-out xl:sticky xl:bottom-0 xl:z-20 xl:mt-2 xl:rounded-t-2xl xl:border-t xl:border-line xl:bg-surface/90 xl:px-4 xl:pb-3 xl:pt-2.5 xl:shadow-pop xl:backdrop-blur ${
+              scrolling ? 'xl:opacity-0 xl:pointer-events-none' : 'xl:opacity-100'
+            }`}
+          >
+            <div className="mx-auto max-w-5xl">
+              <p className="mt-3 hidden text-xs text-muted xl:mt-0 xl:mb-2 xl:block">
+                Shortcuts: <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">P</kbd> preview ·{' '}
+                <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Arrows</kbd> nudge ·{' '}
+                <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Ctrl+Z</kbd> undo ·{' '}
+                <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Ctrl+D</kbd> duplicate ·{' '}
+                <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Del</kbd> remove ·{' '}
+                <kbd className="rounded bg-page px-1.5 py-0.5 text-ink">Esc</kbd> deselect
+              </p>
 
-          <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <button
-              type="button"
-              onClick={onBack}
-              className="flex min-h-[48px] items-center justify-center gap-2 rounded-full border border-line bg-surface px-5 font-medium text-ink hover:border-accent"
-            >
-              <ArrowLeft size={18} /> Back
-            </button>
-            <button
-              type="button"
-              onClick={onContinue}
-              className="flex min-h-[48px] items-center justify-center gap-2 rounded-full bg-accent px-6 text-base font-semibold text-white shadow-soft transition-all hover:bg-accent-hover active:scale-[0.98]"
-            >
-              Continue to export <ArrowRight size={18} />
-            </button>
+              <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between xl:mt-0">
+                <button
+                  type="button"
+                  onClick={onBack}
+                  className="flex min-h-[48px] items-center justify-center gap-2 rounded-full border border-line bg-surface px-5 font-medium text-ink hover:border-accent"
+                >
+                  <ArrowLeft size={18} /> Back
+                </button>
+                <button
+                  type="button"
+                  onClick={onContinue}
+                  className="flex min-h-[48px] items-center justify-center gap-2 rounded-full bg-accent px-6 text-base font-semibold text-white shadow-soft transition-all hover:bg-accent-hover active:scale-[0.98]"
+                >
+                  Continue to export <ArrowRight size={18} />
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 

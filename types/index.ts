@@ -41,6 +41,9 @@ export interface CanvasField {
   fontStyle: FontStyle;
   fontFamily?: string;
   align?: TextAlign;
+  // Which template page this field belongs to (TemplateItem.id). Undefined = older layouts
+  // with a single template; such fields fall back to the first template.
+  templateId?: string;
   // When true, this field renders its literal text (stored in headerName) instead of
   // looking up a value from the dataset row. Used for custom words like "and", "or".
   isStatic?: boolean;
@@ -111,6 +114,11 @@ export interface TemplateItem {
   id: string;
   name: string;
   image: HTMLImageElement;
+  // Pages that came from the same uploaded file share a docId; separate uploads differ. A doc with
+  // more than one page is a multi-page template and exports as a single combined document per row.
+  docId: string;
+  // 1-based page number within the doc (1 for single-page uploads).
+  page: number;
 }
 
 // One parsed dataset file. Datasets are merged (rows concatenated, headers unioned) for use.

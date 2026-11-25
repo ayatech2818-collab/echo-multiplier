@@ -171,14 +171,14 @@ export default function Palette({ studio, onPlaced }: { studio: Studio; onPlaced
 
   return (
     <div className="space-y-5">
-      {/* Data columns */}
+      {/* Data columns — the chip list scrolls on its own so "Add something else" stays in view. */}
       <section>
         <h3 className="mb-0.5 text-sm font-semibold text-ink">Data columns</h3>
         <p className="mb-2.5 text-xs text-muted">
           Tap a column to put its text on the template (or drag it). Each document gets its own row&apos;s value.
         </p>
         {excelHeaders.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 xl:max-h-[40vh] xl:content-start xl:overflow-y-auto xl:pr-1">
             {excelHeaders.map((header) => (
               <HeaderChip key={header} label={header} spec={{ type: 'column', header }} onAdd={place} />
             ))}

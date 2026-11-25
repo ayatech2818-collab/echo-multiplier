@@ -50,6 +50,7 @@ export default function ExportStep({
   const {
     templates,
     activeTemplate,
+    documents,
     activeRows,
     allRows,
     canvasFields,
@@ -83,7 +84,20 @@ export default function ExportStep({
   ];
   const ready = requirements.every((r) => r.ok) && templateCheck.valid && blockingErrors.length === 0;
 
-  const templateCount = exportAllTemplates ? templates.length : 1;
+  // A "document" is one uploaded file's pages. Multi-page documents combine their pages per row.
+  const activeDoc = useMemo(
+    () => documents.find((pages) => pages.some((p) => p.id === activeTemplate?.id)) ?? [],
+    [documents, activeTemplate]
+  );
+  const combineTemplates = studio.combineTemplates;
+  const source = exportAllTemplates ? documents.flat() : activeDoc;
+  // The combine choice only appears when a multi-page template is being exported.
+  const hasMultiPageDoc = (exportAllTemplates ? documents : [activeDoc]).some((d) => d.length > 1);
+  const combine = hasMultiPageDoc && combineTemplates;
+  const exportedDocs = source.length <= 1 ? [source] : combine ? [source] : source.map((t) => [t]);
+  const anyMultiPage = exportedDocs.some((pages) => pages.length > 1);
+  const pageCount = exportedDocs[0]?.length ?? 1;
+  const templateCount = exportedDocs.length;
   const totalDocs = activeRows.length * templateCount;
   const docW = activeTemplate?.image.width ?? 4;
   const docH = activeTemplate?.image.height ?? 3;
@@ -91,7 +105,8 @@ export default function ExportStep({
   const rawBatch = exportBatchSize === 'all' ? Math.max(1, activeRows.length) : exportBatchSize;
   const sheetsPerZip = Math.max(1, Math.floor(rawBatch / perSheet));
   const filesPerTemplate = outputFormat === 'single-pdf' ? Math.max(1, Math.ceil(sheets / 200)) : Math.max(1, Math.ceil(sheets / sheetsPerZip));
-  const totalFiles = filesPerTemplate * templateCount;
+  // Multi-page documents produce one output file per document (one combined PDF / one ZIP of page images).
+  const totalFiles = anyMultiPage ? templateCount : filesPerTemplate * templateCount;
 
   const ext = outputFormat === 'image' ? 'png' : 'pdf';
   const exampleNames = useMemo(() => {
@@ -193,13 +208,21 @@ export default function ExportStep({
 
       {/* Settings */}
       <section className="space-y-5 rounded-2xl border border-line bg-surface p-4 shadow-soft sm:p-5">
-        {templates.length > 1 && (
+        {anyMultiPage && (
+          <p className="rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm text-ink">
+            {exportAllTemplates ? 'These templates combine into ' : 'This template is '}
+            <strong className="font-medium">{pageCount} pages</strong>. Each data row becomes one{' '}
+            {outputFormat === 'image' ? 'set of page images' : 'document with every page'}.
+          </p>
+        )}
+
+        {documents.length > 1 && (
           <div>
             <h2 className="mb-1.5 text-sm font-semibold text-ink">Which templates?</h2>
             <div role="group" aria-label="Which templates" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {[
                 { all: false, label: `Only “${activeTemplate?.name ?? 'current'}”`, hint: 'The one shown in Step 2' },
-                { all: true, label: `All ${templates.length} templates`, hint: 'One set of files for each template' },
+                { all: true, label: `All ${documents.length} templates`, hint: 'Export every template' },
               ].map((opt) => (
                 <button
                   key={String(opt.all)}
@@ -208,6 +231,32 @@ export default function ExportStep({
                   aria-pressed={exportAllTemplates === opt.all}
                   className={`min-h-[56px] rounded-xl border px-3.5 py-2 text-left transition-colors ${
                     exportAllTemplates === opt.all ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
+                  }`}
+                >
+                  <span className="block truncate text-sm font-medium text-ink">{opt.label}</span>
+                  <span className="block text-xs text-muted">{opt.hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Only meaningful for a multi-page template: combine its pages, or export one file per page. */}
+        {hasMultiPageDoc && (
+          <div>
+            <h2 className="mb-1.5 text-sm font-semibold text-ink">Pages</h2>
+            <div role="group" aria-label="How to export pages" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {[
+                { on: true, label: 'Combine pages into one file', hint: 'Every page in one PDF per row' },
+                { on: false, label: 'One file per page', hint: 'Each page exported on its own' },
+              ].map((opt) => (
+                <button
+                  key={String(opt.on)}
+                  type="button"
+                  onClick={() => studio.setCombineTemplates(opt.on)}
+                  aria-pressed={combineTemplates === opt.on}
+                  className={`min-h-[56px] rounded-xl border px-3.5 py-2 text-left transition-colors ${
+                    combineTemplates === opt.on ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
                   }`}
                 >
                   <span className="block truncate text-sm font-medium text-ink">{opt.label}</span>
@@ -278,6 +327,7 @@ export default function ExportStep({
           )}
         </div>
 
+        {!anyMultiPage && (
         <div>
           <h2 className="mb-1 text-sm font-semibold text-ink">Documents per page</h2>
           <p className="mb-2 text-xs text-muted">
@@ -320,8 +370,9 @@ export default function ExportStep({
             })}
           </div>
         </div>
+        )}
 
-        {outputFormat !== 'single-pdf' && (
+        {outputFormat !== 'single-pdf' && !anyMultiPage && (
           <div>
             <label htmlFor="batch" className="mb-1.5 block text-sm font-semibold text-ink">
               Documents per ZIP file
@@ -406,7 +457,7 @@ export default function ExportStep({
           {ready || totalDocs > 0
             ? `${activeRows.length.toLocaleString()} document${activeRows.length === 1 ? '' : 's'}${
                 templateCount > 1 ? ` × ${templateCount} templates` : ''
-              }${perSheet > 1 ? ` → ${(sheets * templateCount).toLocaleString()} page${sheets * templateCount === 1 ? '' : 's'} (${perSheet} per page)` : ''} → ${totalFiles} ${outputFormat === 'single-pdf' ? 'PDF' : 'ZIP'} file${totalFiles === 1 ? '' : 's'}`
+              }${anyMultiPage ? ` × ${pageCount} pages` : ''}${!anyMultiPage && perSheet > 1 ? ` → ${(sheets * templateCount).toLocaleString()} page${sheets * templateCount === 1 ? '' : 's'} (${perSheet} per page)` : ''} → ${totalFiles} ${outputFormat === 'single-pdf' ? 'PDF' : 'ZIP'} file${totalFiles === 1 ? '' : 's'}`
             : 'Nothing to export yet'}
         </p>
         {allRows.length > activeRows.length && (

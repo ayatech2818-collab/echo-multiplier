@@ -37,6 +37,7 @@ import {
   ExportJob,
   ExportStats,
   exportBatch,
+  exportMultiPage,
   resolveScale,
   Sharpness,
   exportSinglePDF,
@@ -83,7 +84,7 @@ export const buildField = (
   const center = { x: template.width / 2 + cascade, y: template.height / 2 + cascade };
   const id = generateId();
   const textBase = {
-    fontSize: 24,
+    fontSize: 50,
     fill: '#1d1d1f',
     fontStyle: 'normal' as const,
     fontFamily: 'Arial',
@@ -175,6 +176,9 @@ export function useStudio() {
   const [exportBatchSize, setExportBatchSize] = useState<ExportBatchSize>('all');
   const [filenameTemplate, setFilenameTemplate] = useState('');
   const [exportAllTemplates, setExportAllTemplates] = useState(false);
+  // When the export involves a multi-page template: combine its pages into one document per row.
+  // Only meaningful (and only shown) when a multi-page document is being exported.
+  const [combineTemplates, setCombineTemplates] = useState(true);
   const [perSheet, setPerSheet] = useState(1);
   const [sharpness, setSharpness] = useState<Sharpness>('auto');
   const [isExporting, setIsExporting] = useState(false);
@@ -246,8 +250,7 @@ export function useStudio() {
     commit({ past: [...h.past, h.present], present: h.future[0], future: h.future.slice(1) });
   }, [commit]);
 
-  // Drop the selection if its field disappeared (delete, undo).
-  const effectiveSelectedId = canvasFields.some((f) => f.id === selectedFieldId) ? selectedFieldId : null;
+  // Scoped to the active page below, once activeFields is known.
 
   // ---------------- derived data ----------------
   const merged = useMemo(() => mergeDatasets(datasets), [datasets]);
@@ -264,6 +267,44 @@ export function useStudio() {
   const activeTemplate = useMemo(
     () => templates.find((t) => t.id === activeTemplateId) ?? templates[0] ?? null,
     [templates, activeTemplateId]
+  );
+  // Which template page a field sits on. Fields with no (or a stale) templateId fall back to the first
+  // template, so single-template and older saved layouts keep showing all their fields.
+  const resolveFieldTemplateId = useCallback(
+    (f: CanvasField): string | undefined => {
+      if (f.templateId && templates.some((t) => t.id === f.templateId)) return f.templateId;
+      return templates[0]?.id;
+    },
+    [templates]
+  );
+  // Only the active page's fields are shown and edited; the undo history keeps every page's fields.
+  const activeFields = useMemo(
+    () => (activeTemplate ? canvasFields.filter((f) => resolveFieldTemplateId(f) === activeTemplate.id) : []),
+    [canvasFields, activeTemplate, resolveFieldTemplateId]
+  );
+  // Templates grouped into documents (one group per uploaded file), each sorted into page order.
+  const documents = useMemo(() => {
+    const byDoc = new Map<string, TemplateItem[]>();
+    templates.forEach((t) => {
+      const arr = byDoc.get(t.docId) ?? [];
+      arr.push(t);
+      byDoc.set(t.docId, arr);
+    });
+    return [...byDoc.values()].map((arr) => [...arr].sort((a, b) => a.page - b.page));
+  }, [templates]);
+  // Pages of the document the active page belongs to, in page order (what the designer stacks).
+  const activeDocPages = useMemo(
+    () => (activeTemplate ? documents.find((pages) => pages.some((p) => p.id === activeTemplate.id)) ?? [activeTemplate] : []),
+    [documents, activeTemplate]
+  );
+  const fieldsForTemplate = useCallback(
+    (tplId: string) => canvasFields.filter((f) => resolveFieldTemplateId(f) === tplId),
+    [canvasFields, resolveFieldTemplateId]
+  );
+  // Drop the selection if its field disappeared (delete, undo) or lives on another page.
+  const effectiveSelectedId = useMemo(
+    () => (activeFields.some((f) => f.id === selectedFieldId) ? selectedFieldId : null),
+    [activeFields, selectedFieldId]
   );
   // Bumped whenever a PDF page finishes loading at full quality, so the editor redraws it.
   const [pageTick, setPageTick] = useState(0);
@@ -282,7 +323,7 @@ export function useStudio() {
     let cancelled = false;
     const index = buildAssetIndex(assets);
     const wanted = new Set<ImageAsset>();
-    canvasFields.forEach((f) => {
+    activeFields.forEach((f) => {
       const asset = findFieldAsset(f, showingRow, index);
       if (asset?.loadFull) wanted.add(asset);
     });
@@ -305,7 +346,7 @@ export function useStudio() {
     return () => {
       cancelled = true;
     };
-  }, [assets, canvasFields, showingRow, isExporting]);
+  }, [assets, activeFields, showingRow, isExporting]);
 
   // ---------------- uploads ----------------
   const addTemplates = useCallback(
@@ -320,7 +361,9 @@ export function useStudio() {
         }
         try {
           const { pages, totalPages } = await loadTemplatePages(file);
-          pages.forEach((p) => added.push({ id: generateId(), name: p.name, image: p.image }));
+          // Pages from one file share a docId so export can combine them into one document per row.
+          const docId = generateId();
+          pages.forEach((p, i) => added.push({ id: generateId(), name: p.name, image: p.image, docId, page: i + 1 }));
           if (totalPages > pages.length) {
             notify('warning', `"${file.name}" has ${totalPages} pages; the first ${pages.length} were added.`);
           }
@@ -438,23 +481,27 @@ export function useStudio() {
 
   // ---------------- placing fields ----------------
   const addField = useCallback(
-    (spec: FieldSpec, pos?: { x: number; y: number }) => {
-      if (!activeTemplate) {
+    (spec: FieldSpec, pos?: { x: number; y: number }, templateId?: string) => {
+      const target = (templateId ? templates.find((t) => t.id === templateId) : null) ?? activeTemplate;
+      if (!target) {
         notify('info', 'Add a template first (Step 1).');
         return null;
       }
-      const field = buildField(
-        spec,
-        pos ?? null,
-        { width: activeTemplate.image.width, height: activeTemplate.image.height },
-        assets,
-        histRef.current.present.length
-      );
+      const field = {
+        ...buildField(
+          spec,
+          pos ?? null,
+          { width: target.image.width, height: target.image.height },
+          assets,
+          histRef.current.present.length
+        ),
+        templateId: target.id,
+      };
       setFields((prev) => [...prev, field]);
       setSelectedFieldId(field.id);
       return field;
     },
-    [activeTemplate, assets, notify, setFields]
+    [activeTemplate, templates, assets, notify, setFields]
   );
 
   const deleteSelected = useCallback(() => {
@@ -705,8 +752,8 @@ export function useStudio() {
         makeSampleCertificate('#059669'),
         makeSampleAssets(),
       ]);
-      const t1: TemplateItem = { id: generateId(), name: 'Sample certificate (blue)', image: blue };
-      const t2: TemplateItem = { id: generateId(), name: 'Sample certificate (green)', image: green };
+      const t1: TemplateItem = { id: generateId(), name: 'Sample certificate (blue)', image: blue, docId: generateId(), page: 1 };
+      const t2: TemplateItem = { id: generateId(), name: 'Sample certificate (green)', image: green, docId: generateId(), page: 1 };
       // Remember the current state once (loading the sample twice still undoes to the original).
       if (!sampleBackup.current) sampleBackup.current = latestState.current;
       setSampleLoaded(true);
@@ -726,6 +773,7 @@ export function useStudio() {
         fontStyle: 'bold',
         fontFamily: 'Georgia',
         align: 'center',
+        templateId: t1.id,
         ...extra,
       });
       const fields: CanvasField[] = [
@@ -735,6 +783,7 @@ export function useStudio() {
         text('Date', 600, 735, { fontSize: 26, fontStyle: 'normal', fill: '#475569', format: { type: 'date', pattern: 'D MMMM YYYY' } }),
         {
           ...buildField({ type: 'media', kind: 'image', column: 'Photo' }, { x: 1010, y: 75 }, { width: 1200, height: 850 }, sampleAssets, 0),
+          templateId: t1.id,
           width: 130,
           height: 130,
           shape: 'circle',
@@ -744,6 +793,7 @@ export function useStudio() {
         },
         {
           ...buildField({ type: 'media', kind: 'qr', column: 'ID' }, { x: 80, y: 620 }, { width: 1200, height: 850 }, sampleAssets, 0),
+          templateId: t1.id,
           width: 130,
           height: 130,
         },
@@ -765,20 +815,27 @@ export function useStudio() {
 
   const runExport = useCallback(async () => {
     if (isExporting) return;
-    const jobsTemplates = exportAllTemplates ? templates : activeTemplate ? [activeTemplate] : [];
-    if (jobsTemplates.length === 0 || activeRows.length === 0 || canvasFields.length === 0) {
+    // Export whole documents (a document is one uploaded file's pages). Multi-page documents combine
+    // their pages into one output per row; single-page documents export exactly as before.
+    // Pages to export: all templates (in order) or just the active document's pages.
+    const source = exportAllTemplates ? documents.flat() : activeDocPages;
+    if (source.length === 0 || activeRows.length === 0 || canvasFields.length === 0) {
       notify('info', 'You need a template, some data and at least one field before exporting.');
       return;
     }
+    // Combining only applies when a multi-page document is in play; otherwise each template is its own file.
+    const hasMultiPageDoc = (exportAllTemplates ? documents : [activeDocPages]).some((d) => d.length > 1);
+    const combine = hasMultiPageDoc && combineTemplates;
+    const jobDocs: TemplateItem[][] = source.length <= 1 ? [source] : combine ? [source] : source.map((t) => [t]);
 
     const controller = new AbortController();
     abortRef.current = controller;
     const stats: ExportStats = { missingMedia: 0, downscaled: false };
-    const total = activeRows.length * jobsTemplates.length;
+    const total = activeRows.length * jobDocs.length;
     setIsExporting(true);
     setExportProgress({ current: 0, total });
 
-    const many = jobsTemplates.length > 1;
+    const many = jobDocs.length > 1;
     const baseName = filenameTemplate.trim()
       ? sanitizeFilename(filenameTemplate.replace(/\{\{[^}]+\}\}/g, '')) || 'documents'
       : 'echo-multiplier-documents';
@@ -788,28 +845,37 @@ export function useStudio() {
       stats,
       onProgress: (current: number, t: number) => setExportProgress({ current, total: t }),
     };
+    const fieldsFor = (tplId: string) => canvasFields.filter((f) => resolveFieldTemplateId(f) === tplId);
 
     const downloads: { blob: Blob; name: string }[] = [];
     try {
       let done = 0;
-      for (const template of jobsTemplates) {
-        const job: ExportJob = { templateImage: template.image, fields: canvasFields, assets };
+      for (const pages of jobDocs) {
+        const docFields = pages.flatMap((p) => fieldsFor(p.id));
         // Output sharpness for this run, the same for every document so all pages come out the same size.
-        const options = { ...baseOptions, scale: resolveScale(sharpness, canvasFields, activeRows, assetIndex) };
-        const label = many ? `-${sanitizeFilename(template.name).replace(/\s+/g, '-')}` : '';
+        const options = { ...baseOptions, scale: resolveScale(sharpness, docFields, activeRows, assetIndex) };
+        const docName = pages[0].name.replace(/\s*\(page \d+\)\s*$/i, '');
+        const label = many ? `-${sanitizeFilename(docName).replace(/\s+/g, '-')}` : '';
 
         let volumes: { blob: Blob; startRecord: number; endRecord: number }[] = [];
-        if (outputFormat === 'single-pdf') {
-          volumes = await exportSinglePDF(job, activeRows, options, done, total);
+        if (pages.length > 1) {
+          // Multi-page template: combine the pages per row (perSheet does not apply here).
+          const docPages = pages.map((p) => ({ image: p.image, fields: fieldsFor(p.id) }));
+          volumes = await exportMultiPage(docPages, assets, activeRows, filenameTemplate, outputFormat, options, done, total);
         } else {
-          // Keep each ZIP batch a whole number of sheets so no sheet is split across two ZIPs.
-          const rawBatch = exportBatchSize === 'all' ? activeRows.length : exportBatchSize;
-          const batchSize = Math.max(perSheet, Math.floor(rawBatch / perSheet) * perSheet);
-          for (let start = 0; start < activeRows.length; start += batchSize) {
-            const batch = activeRows.slice(start, start + batchSize);
-            volumes.push(
-              ...(await exportBatch(job, batch, filenameTemplate, outputFormat, options, start, activeRows.length, done + start, total))
-            );
+          const job: ExportJob = { templateImage: pages[0].image, fields: fieldsFor(pages[0].id), assets };
+          if (outputFormat === 'single-pdf') {
+            volumes = await exportSinglePDF(job, activeRows, options, done, total);
+          } else {
+            // Keep each ZIP batch a whole number of sheets so no sheet is split across two ZIPs.
+            const rawBatch = exportBatchSize === 'all' ? activeRows.length : exportBatchSize;
+            const batchSize = Math.max(perSheet, Math.floor(rawBatch / perSheet) * perSheet);
+            for (let start = 0; start < activeRows.length; start += batchSize) {
+              const batch = activeRows.slice(start, start + batchSize);
+              volumes.push(
+                ...(await exportBatch(job, batch, filenameTemplate, outputFormat, options, start, activeRows.length, done + start, total))
+              );
+            }
           }
         }
         done += activeRows.length;
@@ -845,7 +911,7 @@ export function useStudio() {
     }
   }, [
     activeRows,
-    activeTemplate,
+    activeDocPages,
     assets,
     canvasFields,
     exportAllTemplates,
@@ -857,13 +923,16 @@ export function useStudio() {
     perSheet,
     sharpness,
     assetIndex,
-    templates,
+    documents,
+    combineTemplates,
+    resolveFieldTemplateId,
   ]);
 
   return {
     // files
     templates,
     activeTemplate,
+    documents,
     setActiveTemplateId,
     datasets,
     assets,
@@ -887,6 +956,9 @@ export function useStudio() {
     busy,
     // design
     canvasFields,
+    activeFields,
+    activeDocPages,
+    fieldsForTemplate,
     setFields,
     updateField,
     selectedFieldId: effectiveSelectedId,
@@ -925,6 +997,8 @@ export function useStudio() {
     setFilenameTemplate,
     exportAllTemplates,
     setExportAllTemplates,
+    combineTemplates,
+    setCombineTemplates,
     perSheet,
     setPerSheet,
     sharpness,
